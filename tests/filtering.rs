@@ -52,6 +52,8 @@ fn item(title: &str, description: &str) -> FeedItem {
         title: title.to_string(),
         url: "https://example.com/item".to_string(),
         description: Some(description.to_string()),
+        subjects: Vec::new(),
+        document_filename: None,
         published_at: None,
     }
 }
@@ -77,6 +79,58 @@ fn exchange_watchlist_does_not_match_symbol_inside_another_word() {
     let unrelated = item("Unrelated issuer", "PRELIANCE vendor update");
 
     assert!(!evaluate_item(&config, FilterProfile::ExchangeWatchlist, &unrelated).matched);
+}
+
+#[test]
+fn exchange_watchlist_matches_subject_allowlist_and_document_filename() {
+    let config = test_config();
+    let mut item = item("Corporate announcement", "Exchange filing");
+    item.subjects = vec!["Financial Results".to_string()];
+    item.document_filename = Some("RELIANCE_Q4_Results.pdf".to_string());
+
+    let decision = evaluate_item(&config, FilterProfile::ExchangeWatchlist, &item);
+
+    assert!(decision.matched);
+    assert_eq!(decision.matched_entity.as_deref(), Some("RELIANCE"));
+}
+
+#[test]
+fn bse_watchlist_matches_title_or_description_when_subject_is_allowed() {
+    let config = test_config();
+    let mut title_match = item("Reliance Industries Limited", "Exchange filing");
+    title_match.source_name = "BSE Corporate Announcements".to_string();
+    title_match.subjects = vec!["Financial Results".to_string()];
+
+    let mut description_match = item("Corporate announcement", "RIL board meeting intimation");
+    description_match.source_name = "BSE Corporate Announcements".to_string();
+    description_match.subjects = vec!["Board Meeting".to_string()];
+
+    assert!(evaluate_item(&config, FilterProfile::ExchangeWatchlist, &title_match).matched);
+    assert!(
+        evaluate_item(
+            &config,
+            FilterProfile::ExchangeWatchlist,
+            &description_match
+        )
+        .matched
+    );
+}
+
+#[test]
+fn bse_watchlist_rejects_unrelated_company_even_with_allowed_subject() {
+    let config = test_config();
+    let mut item = item("Corporate announcement", "Exchange filing");
+    item.source_name = "BSE Corporate Announcements".to_string();
+    item.source_url = "https://www.bseindia.com/rss-feed.html".to_string();
+    item.url =
+        "https://www.bseindia.com/xml-data/corpfiling/AttachLive/TCS_Q4_Results.pdf".to_string();
+    item.subjects = vec!["Financial Results".to_string()];
+    item.document_filename = Some("TCS_Q4_Results.pdf".to_string());
+
+    let decision = evaluate_item(&config, FilterProfile::ExchangeWatchlist, &item);
+
+    assert!(!decision.matched);
+    assert_eq!(decision.reason, "watchlist_miss");
 }
 
 #[test]

@@ -10,6 +10,8 @@ fn item(url: &str) -> FeedItem {
         title: "Reliance Industries Limited".to_string(),
         url: url.to_string(),
         description: Some("Board Meeting Intimation".to_string()),
+        subjects: Vec::new(),
+        document_filename: None,
         published_at: None,
     }
 }

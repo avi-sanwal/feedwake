@@ -113,7 +113,8 @@ cron -> feedwake scan -> fetch feeds -> filter locally -> SQLite outbox -> /hook
 ## Filtering Profiles
 
 - `exchange_watchlist`: NSE/BSE feeds match configured symbols, names, aliases,
-  or ISINs, plus the optional category allowlist.
+  or ISINs across the title, description, feed subject/category, URL, and
+  document filename, plus the optional category allowlist.
 - `authority_passthrough`: SEBI/RBI feeds wake on every new item.
 - `media_high_precision`: media feeds require a watchlist entity and a
   market-moving keyword, while excluding broad noisy topics.
@@ -126,7 +127,13 @@ configuration.
 - NSE announcements use `https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml`.
 - SEBI uses `https://www.sebi.gov.in/sebirss.xml`.
 - RBI press releases use `https://rbi.org.in/pressreleases_rss.xml`; RBI also publishes notification, speech, tender, and publication feeds.
-- BSE is supported through the `bse` source type and `exchange_watchlist` profile. Copy the current Corporate Announcements RSS URL from BSE's RSS page into the config.
+- BSE is supported through the `bse` source type and `exchange_watchlist` profile. Copy the current Corporate Announcements RSS URL from BSE's RSS page into the config; FeedWake does not scrape that page at runtime. BSE feeds use a browser-compatible default User-Agent unless `user_agent` is set for the feed.
+
+After adding or changing the BSE feed URL, validate it before enabling cron:
+
+```bash
+feedwake scan --config ~/.config/feedwake/config.toml --dry-run --verbose
+```
 
 ## Tests
 

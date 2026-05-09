@@ -15,6 +15,8 @@ fn event(url: &str, title: &str) -> WakeEvent {
             title: title.to_string(),
             url: url.to_string(),
             description: Some("Board Meeting Intimation".to_string()),
+            subjects: Vec::new(),
+            document_filename: None,
             published_at: None,
         },
         matched_rule: "exchange_watchlist".to_string(),

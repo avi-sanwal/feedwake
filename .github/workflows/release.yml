@@ -141,6 +141,46 @@ jobs:
           git tag "${{ needs.prepare.outputs.tag }}"
           git push origin "${{ needs.prepare.outputs.tag }}"
 
+      - name: Build release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.prepare.outputs.tag }}"
+          previous_tag="${{ needs.prepare.outputs.previous_tag }}"
+
+          {
+            echo "# FeedWake ${tag}"
+            echo
+            if [[ "${previous_tag}" == "Cargo.toml" ]]; then
+              echo "First public release of FeedWake."
+            else
+              echo "Changes since ${previous_tag}."
+            fi
+            echo
+            echo "## What's Changed"
+            echo
+          } > release-notes.md
+
+          if [[ "${previous_tag}" == "Cargo.toml" ]]; then
+            git log --reverse --pretty=format:'- %s (`%h`)' >> release-notes.md
+          else
+            git log --reverse --pretty=format:'- %s (`%h`)' "${previous_tag}..HEAD" >> release-notes.md
+          fi
+
+          {
+            echo
+            echo
+            echo "## Binaries"
+            echo
+            echo "Assets are uploaded by the release build jobs before publication."
+            echo
+            echo "- Linux x86_64: \`feedwake-${tag}-x86_64-unknown-linux-gnu.tar.gz\`"
+            echo "- macOS Apple Silicon: \`feedwake-${tag}-aarch64-apple-darwin.tar.gz\`"
+            echo "- macOS Intel: \`feedwake-${tag}-x86_64-apple-darwin.tar.gz\`"
+            echo "- Windows x86_64: \`feedwake-${tag}-x86_64-pc-windows-msvc.zip\`"
+          } >> release-notes.md
+
       - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,7 +189,7 @@ jobs:
           gh release create "${{ needs.prepare.outputs.tag }}" \
             --draft \
             --title "FeedWake ${{ needs.prepare.outputs.tag }}" \
-            --notes "Manual release generated from latest version source ${{ needs.prepare.outputs.previous_tag }} using a ${{ inputs.bump }} bump."
+            --notes-file release-notes.md
 
   build-binaries:
     name: Build ${{ matrix.target }}

@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use chrono::{SecondsFormat, Utc};
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::config::{default_state_db_path, load_config};
@@ -8,6 +11,8 @@ use crate::delivery::{OpenClawClient, WakeEvent};
 use crate::feed::scan_feed;
 use crate::filter::evaluate_item;
 use crate::state::StateStore;
+
+static FILE_LOGGER: OnceLock<Mutex<File>> = OnceLock::new();
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScanSummary {
@@ -166,11 +171,88 @@ fn deliver_pending(
 }
 
 pub fn log_stdout(message: impl AsRef<str>) {
-    println!("{}", timestamped(message.as_ref()));
+    write_log_line(timestamped(message.as_ref()), OutputStream::Stdout);
 }
 
-fn log_stderr(message: impl AsRef<str>) {
-    eprintln!("{}", timestamped(message.as_ref()));
+pub fn log_stderr(message: impl AsRef<str>) {
+    write_log_line(timestamped(message.as_ref()), OutputStream::Stderr);
+}
+
+pub fn configure_file_logging(log_file: &Path, max_bytes: u64, rotate_count: u8) -> Result<()> {
+    validate_log_rotation(max_bytes, rotate_count)?;
+    if let Some(parent) = log_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    rotate_log_file(log_file, max_bytes, rotate_count)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file)?;
+    FILE_LOGGER
+        .set(Mutex::new(file))
+        .map_err(|_| anyhow!("file logging has already been configured"))
+}
+
+fn write_log_line(line: String, stream: OutputStream) {
+    if let Some(logger) = FILE_LOGGER.get() {
+        if let Ok(mut file) = logger.lock() {
+            let _ = writeln!(file, "{line}");
+            return;
+        }
+    }
+
+    match stream {
+        OutputStream::Stdout => println!("{line}"),
+        OutputStream::Stderr => eprintln!("{line}"),
+    }
+}
+
+fn rotate_log_file(log_file: &Path, max_bytes: u64, rotate_count: u8) -> Result<()> {
+    let should_rotate = match fs::metadata(log_file) {
+        Ok(metadata) => metadata.len() >= max_bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if !should_rotate {
+        return Ok(());
+    }
+
+    for index in (1..rotate_count).rev() {
+        let source = rotated_log_path(log_file, index);
+        let destination = rotated_log_path(log_file, index + 1);
+        match fs::rename(&source, &destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    if rotate_count > 0 {
+        fs::rename(log_file, rotated_log_path(log_file, 1))?;
+    } else {
+        File::create(log_file)?;
+    }
+    Ok(())
+}
+
+fn rotated_log_path(log_file: &Path, index: u8) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}.{}", log_file.display(), index))
+}
+
+fn validate_log_rotation(log_max_bytes: u64, log_rotate_count: u8) -> Result<()> {
+    if log_max_bytes == 0 {
+        return Err(anyhow!("log max bytes must be greater than 0"));
+    }
+    if log_rotate_count > 30 {
+        return Err(anyhow!("log rotate count must be between 0 and 30"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputStream {
+    Stdout,
+    Stderr,
 }
 
 fn timestamped(message: &str) -> String {

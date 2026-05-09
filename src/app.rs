@@ -45,7 +45,7 @@ pub fn run_scan_with_options(
     options: ScanOptions,
 ) -> Result<ScanSummary> {
     let (config, _) = load_config(config_path)?;
-    let state = if options.dry_run && config.scan.state_db.is_none() {
+    let state = if options.dry_run {
         StateStore::memory()?
     } else {
         let db_path = config

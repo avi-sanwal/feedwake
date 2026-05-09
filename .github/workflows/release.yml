@@ -1,0 +1,227 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version component to increment from the latest vX.Y.Z tag
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    outputs:
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+          if [[ -z "${latest_tag}" ]]; then
+            latest_tag="Cargo.toml"
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          else
+            version="${latest_tag#v}"
+          fi
+
+          IFS='.' read -r major minor patch <<< "${version}"
+
+          case "${{ inputs.bump }}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "Unsupported bump '${{ inputs.bump }}'" >&2
+              exit 1
+              ;;
+          esac
+
+          next_version="${major}.${minor}.${patch}"
+          next_tag="v${next_version}"
+
+          if git rev-parse "${next_tag}" >/dev/null 2>&1; then
+            echo "Tag ${next_tag} already exists" >&2
+            exit 1
+          fi
+
+          echo "previous_tag=${latest_tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${next_version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${next_tag}" >> "${GITHUB_OUTPUT}"
+
+  release:
+    name: Create tag
+    runs-on: ubuntu-latest
+    needs: prepare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Update Cargo version
+        shell: bash
+        run: |
+          set -euo pipefail
+          perl -0pi -e 's/^version = "[^"]+"/version = "${{ needs.prepare.outputs.version }}"/m' Cargo.toml
+          cargo metadata --locked --format-version 1 >/dev/null || cargo metadata --format-version 1 >/dev/null
+
+      - name: Verify
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Commit version bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release ${{ needs.prepare.outputs.tag }}"
+          git tag "${{ needs.prepare.outputs.tag }}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "${{ needs.prepare.outputs.tag }}"
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --draft \
+            --title "FeedWake ${{ needs.prepare.outputs.tag }}" \
+            --notes "Manual release generated from latest version source ${{ needs.prepare.outputs.previous_tag }} using a ${{ inputs.bump }} bump."
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs:
+      - prepare
+      - release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            bin_name: feedwake
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            bin_name: feedwake
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+            bin_name: feedwake
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            bin_name: feedwake.exe
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package Unix artifact
+        if: matrix.archive_ext == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}"
+          mkdir -p "${artifact}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "${artifact}/"
+          cp README.md config/feedwake.example.toml "${artifact}/"
+          tar -czf "${artifact}.tar.gz" "${artifact}"
+
+      - name: Package Windows artifact
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          $artifact = "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $artifact | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" $artifact
+          Copy-Item README.md $artifact
+          Copy-Item config/feedwake.example.toml $artifact
+          Compress-Archive -Path $artifact -DestinationPath "$artifact.zip"
+
+      - name: Upload artifact to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            gh release upload "${{ needs.prepare.outputs.tag }}" "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.zip" --clobber
+          else
+            gh release upload "${{ needs.prepare.outputs.tag }}" "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.tar.gz" --clobber
+          fi
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-binaries
+
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false

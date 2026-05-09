@@ -64,6 +64,14 @@ impl OpenClawClient {
     }
 
     pub fn post_batch(&self, events: &[WakeEvent]) -> Result<()> {
+        self.post_batch_with_session_key(events, None)
+    }
+
+    pub fn post_batch_with_session_key(
+        &self,
+        events: &[WakeEvent],
+        session_key: Option<&str>,
+    ) -> Result<()> {
         if events.is_empty() {
             return Err(anyhow!(
                 "OpenClaw wake delivery requires at least one event"
@@ -72,12 +80,15 @@ impl OpenClawClient {
 
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
         let articles: Vec<_> = events.iter().map(WakeEvent::article_payload).collect();
-        let payload = json!({
+        let mut payload = json!({
             "text": batch_wake_text(events),
             "mode": self.mode,
             "articleCount": events.len(),
             "articles": articles,
         });
+        if let Some(session_key) = session_key {
+            payload["sessionKey"] = json!(session_key);
+        }
 
         let response = agent
             .post(&self.wake_url)

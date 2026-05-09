@@ -131,7 +131,7 @@ fn patch_openclaw_config_enables_hooks_with_env_token() {
             "token": "${OPENCLAW_HOOK_TOKEN}",
             "path": "/hooks",
             "defaultSessionKey": "hook:feedwake",
-            "allowRequestSessionKey": false,
+            "allowRequestSessionKey": true,
             "allowedSessionKeyPrefixes": ["hook:"],
             "mappings": [{
                 "match": { "path": "feed-wake" },
@@ -168,6 +168,7 @@ fn patch_openclaw_config_preserves_existing_hook_values() {
     assert_eq!(patched["hooks"]["enabled"], true);
     assert_eq!(patched["hooks"]["token"], "${OPENCLAW_EXISTING_HOOK_TOKEN}");
     assert_eq!(patched["hooks"]["path"], "/ingress");
+    assert_eq!(patched["hooks"]["allowRequestSessionKey"], true);
     assert_eq!(
         patched["hooks"]["mappings"],
         json!([

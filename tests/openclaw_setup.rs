@@ -59,7 +59,7 @@ fn reconcile_openclaw_env_file_adds_or_updates_token_value() {
     .expect("env file should reconcile");
 
     assert!(rendered.contains("OTHER=value"));
-    assert!(rendered.contains("OPENCLAW_HOOK_TOKEN='new-token'"));
+    assert!(rendered.contains("export OPENCLAW_HOOK_TOKEN='new-token'"));
     assert!(!rendered.contains("OPENCLAW_HOOK_TOKEN=old"));
 }
 
@@ -188,6 +188,9 @@ fn render_managed_crontab_adds_feedwake_block() {
         feedwake_bin: PathBuf::from("/usr/local/bin/feedwake"),
         frequency_minutes: 5,
         hook_token_env: DEFAULT_HOOK_TOKEN_ENV.to_string(),
+        log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
+        log_max_bytes: 1_048_576,
+        log_rotate_count: 5,
     };
 
     let crontab = render_managed_crontab("MAILTO=test@example.com\n", &options)
@@ -198,7 +201,19 @@ fn render_managed_crontab_adds_feedwake_block() {
     assert!(crontab.contains("*/5 * * * * /bin/sh -c "));
     assert!(crontab.contains("/Users/test/.openclaw/.env"));
     assert!(crontab.contains("/usr/local/bin/feedwake"));
-    assert!(crontab.contains("scan --config"));
+    assert!(crontab.contains("--verbose scan --config"));
+    assert!(crontab.contains("set -a"));
+    assert!(crontab.contains("set +a"));
+    assert!(crontab.contains("mkdir -p"));
+    assert!(crontab.contains("/Users/test/.local/state/feedwake"));
+    assert!(crontab.contains(">>"));
+    assert!(crontab.contains("2>&1"));
+    assert!(crontab.contains("[ -f"));
+    assert!(crontab.contains("wc -c <"));
+    assert!(crontab.contains("-ge 1048576"));
+    assert!(crontab.contains("mv -f"));
+    assert!(crontab.contains(".4"));
+    assert!(crontab.contains(".5"));
 }
 
 #[test]
@@ -209,6 +224,9 @@ fn resolve_install_options_uses_explicit_openclaw_config_directory() {
         feedwake_bin: Some(PathBuf::from("/tmp/feedwake")),
         frequency_minutes: 10,
         hook_token_env: DEFAULT_HOOK_TOKEN_ENV.to_string(),
+        log_file: Some(PathBuf::from("/tmp/feedwake.log")),
+        log_max_bytes: 4096,
+        log_rotate_count: 2,
     })
     .expect("options should resolve");
 
@@ -223,6 +241,9 @@ fn resolve_install_options_uses_explicit_openclaw_config_directory() {
     );
     assert_eq!(options.feedwake_bin, PathBuf::from("/tmp/feedwake"));
     assert_eq!(options.frequency_minutes, 10);
+    assert_eq!(options.log_file, PathBuf::from("/tmp/feedwake.log"));
+    assert_eq!(options.log_max_bytes, 4096);
+    assert_eq!(options.log_rotate_count, 2);
 }
 
 #[test]
@@ -234,6 +255,9 @@ fn render_managed_crontab_replaces_existing_feedwake_block() {
         feedwake_bin: PathBuf::from("/usr/local/bin/feedwake"),
         frequency_minutes: 15,
         hook_token_env: DEFAULT_HOOK_TOKEN_ENV.to_string(),
+        log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
+        log_max_bytes: 1_048_576,
+        log_rotate_count: 5,
     };
 
     let existing = "\
@@ -261,6 +285,47 @@ fn render_managed_crontab_rejects_invalid_frequency() {
         feedwake_bin: PathBuf::from("/usr/local/bin/feedwake"),
         frequency_minutes: 0,
         hook_token_env: DEFAULT_HOOK_TOKEN_ENV.to_string(),
+        log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
+        log_max_bytes: 1_048_576,
+        log_rotate_count: 5,
+    };
+
+    assert!(render_managed_crontab("", &options).is_err());
+}
+
+#[test]
+fn resolve_install_options_uses_default_feedwake_log_path() {
+    let home = std::env::var_os("HOME").expect("HOME should be set for tests");
+    let options = resolve_install_options(OpenClawInstallRequest {
+        openclaw_config_dir: Some(PathBuf::from("/tmp/openclaw")),
+        feedwake_config_path: Some(PathBuf::from("/tmp/feedwake.toml")),
+        feedwake_bin: Some(PathBuf::from("/tmp/feedwake")),
+        frequency_minutes: 10,
+        hook_token_env: DEFAULT_HOOK_TOKEN_ENV.to_string(),
+        log_file: None,
+        log_max_bytes: 1_048_576,
+        log_rotate_count: 5,
+    })
+    .expect("options should resolve");
+
+    assert_eq!(
+        options.log_file,
+        PathBuf::from(home).join(".local/state/feedwake/feedwake.log")
+    );
+}
+
+#[test]
+fn render_managed_crontab_rejects_invalid_log_rotation_settings() {
+    let options = OpenClawInstallOptions {
+        openclaw_config_dir: PathBuf::from("/Users/test/.openclaw"),
+        openclaw_config_path: PathBuf::from("/Users/test/.openclaw/openclaw.json"),
+        feedwake_config_path: PathBuf::from("/Users/test/.config/feedwake/config.toml"),
+        feedwake_bin: PathBuf::from("/usr/local/bin/feedwake"),
+        frequency_minutes: 5,
+        hook_token_env: DEFAULT_HOOK_TOKEN_ENV.to_string(),
+        log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
+        log_max_bytes: 0,
+        log_rotate_count: 5,
     };
 
     assert!(render_managed_crontab("", &options).is_err());

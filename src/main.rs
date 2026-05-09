@@ -40,6 +40,12 @@ enum OpenClawCommands {
         feedwake_bin: Option<PathBuf>,
         #[arg(long, default_value = feedwake::openclaw::DEFAULT_HOOK_TOKEN_ENV)]
         hook_token_env: String,
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+        #[arg(long, default_value_t = 1_048_576)]
+        log_max_bytes: u64,
+        #[arg(long, default_value_t = 5)]
+        log_rotate_count: u8,
     },
 }
 
@@ -54,13 +60,13 @@ fn main() -> Result<()> {
                     verbose: cli.verbose,
                 },
             )?;
-            println!(
+            feedwake::app::log_stdout(format!(
                 "scan complete: feeds={}, new_items={}, enqueued={}, delivered={}",
                 summary.feeds_scanned,
                 summary.items_seen,
                 summary.events_enqueued,
                 summary.events_delivered
-            );
+            ));
         }
         Commands::Openclaw { command } => match command {
             OpenClawCommands::Install {
@@ -69,6 +75,9 @@ fn main() -> Result<()> {
                 frequency_minutes,
                 feedwake_bin,
                 hook_token_env,
+                log_file,
+                log_max_bytes,
+                log_rotate_count,
             } => {
                 let summary = feedwake::openclaw::install_openclaw(
                     feedwake::openclaw::OpenClawInstallRequest {
@@ -77,15 +86,19 @@ fn main() -> Result<()> {
                         feedwake_bin,
                         frequency_minutes,
                         hook_token_env,
+                        log_file,
+                        log_max_bytes,
+                        log_rotate_count,
                     },
                 )?;
-                println!(
-                    "openclaw install complete: config={}, feedwake_config={}, feedwake_bin={}, frequency_minutes={}",
+                feedwake::app::log_stdout(format!(
+                    "openclaw install complete: config={}, feedwake_config={}, feedwake_bin={}, frequency_minutes={}, log_file={}",
                     summary.openclaw_config_path.display(),
                     summary.feedwake_config_path.display(),
                     summary.feedwake_bin.display(),
-                    summary.frequency_minutes
-                );
+                    summary.frequency_minutes,
+                    summary.log_file.display()
+                ));
             }
         },
     }

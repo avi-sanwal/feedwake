@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use chrono::{SecondsFormat, Utc};
 use std::path::Path;
 use std::time::Duration;
 
@@ -56,18 +57,22 @@ pub fn run_scan_with_options(
     for feed in &config.feeds {
         summary.feeds_scanned += 1;
         if options.verbose {
-            eprintln!("scanning feed: {} ({})", feed.name, feed.url);
+            log_stderr(format!("scanning feed: {} ({})", feed.name, feed.url));
         }
         let items = match scan_feed(feed, &config.scan, &state) {
             Ok(items) => items,
             Err(error) => {
                 summary.feed_errors += 1;
-                eprintln!("feed error for {}: {}", feed.name, error);
+                log_stderr(format!("feed error for {}: {}", feed.name, error));
                 continue;
             }
         };
         if options.verbose {
-            eprintln!("feed items fetched: {} ({})", items.len(), feed.name);
+            log_stderr(format!(
+                "feed items fetched: {} ({})",
+                items.len(),
+                feed.name
+            ));
         }
 
         for item in items {
@@ -86,7 +91,7 @@ pub fn run_scan_with_options(
                 matched_entity: decision.matched_entity,
             };
             if options.dry_run {
-                println!("dry-run match: {}", event.wake_text());
+                log_stdout(format!("dry-run match: {}", event.wake_text()));
             } else {
                 state.enqueue_event(&event)?;
             }
@@ -131,12 +136,12 @@ fn deliver_pending(
     let pending = state.pending_events_limit(openclaw.max_articles_per_wake)?;
     if pending.is_empty() {
         if verbose {
-            eprintln!("delivery queue empty");
+            log_stderr("delivery queue empty");
         }
         return Ok(());
     }
     if verbose {
-        eprintln!("delivering pending events: {}", pending.len());
+        log_stderr(format!("delivering pending events: {}", pending.len()));
     }
 
     let client = OpenClawClient::from_config(openclaw, Duration::from_secs(timeout_seconds))?;
@@ -154,8 +159,24 @@ fn deliver_pending(
             for id in ids {
                 state.mark_delivery_failed(id, &error.to_string())?;
             }
-            eprintln!("delivery error for FeedWake batch: {}", error);
+            log_stderr(format!("delivery error for FeedWake batch: {}", error));
         }
     }
     Ok(())
+}
+
+pub fn log_stdout(message: impl AsRef<str>) {
+    println!("{}", timestamped(message.as_ref()));
+}
+
+fn log_stderr(message: impl AsRef<str>) {
+    eprintln!("{}", timestamped(message.as_ref()));
+}
+
+fn timestamped(message: &str) -> String {
+    format!(
+        "[{}] {}",
+        Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        message
+    )
 }

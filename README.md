@@ -57,11 +57,19 @@ default. Pass `--openclaw-config-dir`, `--frequency-minutes`, `--config`, or
 
 The managed crontab entry sources `~/.openclaw/.env` before running FeedWake, so
 that file is a good place to keep `OPENCLAW_HOOK_TOKEN` for unattended cron runs.
+It runs `feedwake --verbose scan` and appends timestamped output to
+`$XDG_STATE_HOME/feedwake/feedwake.log`, or
+`$HOME/.local/state/feedwake/feedwake.log` when `XDG_STATE_HOME` is not set.
+Before each scan, the cron script rotates that file when it reaches 1 MiB and
+keeps 5 rotated logs by default. Override those defaults with `--log-file`,
+`--log-max-bytes`, and `--log-rotate-count`. Rerun
+`feedwake openclaw install` after upgrading FeedWake to refresh an older managed
+crontab entry.
 
 Manual cron example:
 
 ```cron
-*/5 * * * * /bin/sh -c '. "$HOME/.openclaw/.env" 2>/dev/null; exec /usr/local/bin/feedwake scan --config /etc/feedwake.toml'
+*/5 * * * * /bin/sh -c 'mkdir -p "$HOME/.local/state/feedwake"; set -a; . "$HOME/.openclaw/.env" 2>/dev/null; set +a; exec /usr/local/bin/feedwake --verbose scan --config /etc/feedwake.toml >> "$HOME/.local/state/feedwake/feedwake.log" 2>&1'
 ```
 
 If `--config` is omitted, FeedWake searches:
@@ -81,8 +89,27 @@ are delivered by a later cron run.
 FeedWake is intentionally not a daemon in v1. Let cron own scheduling:
 
 ```cron
-*/5 * * * * /bin/sh -c '. "$HOME/.openclaw/.env" 2>/dev/null; exec /usr/local/bin/feedwake scan --config /etc/feedwake.toml'
+*/5 * * * * /bin/sh -c 'mkdir -p "$HOME/.local/state/feedwake"; set -a; . "$HOME/.openclaw/.env" 2>/dev/null; set +a; exec /usr/local/bin/feedwake --verbose scan --config /etc/feedwake.toml >> "$HOME/.local/state/feedwake/feedwake.log" 2>&1'
 ```
+
+The installer writes the full managed cron entry, including log rotation. Check
+the active entry with:
+
+```bash
+crontab -l
+```
+
+The most common runtime checks are:
+
+```bash
+tail -f ~/.local/state/feedwake/feedwake.log
+ls -lh ~/.local/state/feedwake/feedwake.log*
+```
+
+If cron was installed by an older FeedWake release and still has no log
+redirect, cron output may only be available through the host cron mail or system
+logs. Reinstalling the OpenClaw integration replaces the managed block with the
+logged entry.
 
 State is stored in SQLite. If `scan.state_db` is not configured, FeedWake tries
 `/var/lib/feedwake/feedwake.db` when writable and otherwise uses

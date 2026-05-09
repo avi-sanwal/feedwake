@@ -77,6 +77,14 @@ pub fn fetch_feed(
     };
 
     if response.status() < 200 || response.status() >= 300 {
+        if response.status() == 304 {
+            return Ok(FeedFetchResult {
+                items: Vec::new(),
+                etag: response.header("ETag").map(ToOwned::to_owned),
+                last_modified: response.header("Last-Modified").map(ToOwned::to_owned),
+                not_modified: true,
+            });
+        }
         return Err(anyhow!(
             "failed to fetch {}: status {}",
             feed.url,

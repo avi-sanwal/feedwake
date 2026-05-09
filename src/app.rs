@@ -18,9 +18,28 @@ pub struct ScanSummary {
     pub delivery_errors: usize,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ScanOptions {
+    pub dry_run: bool,
+    pub verbose: bool,
+}
+
 pub fn run_scan(config_path: Option<&Path>, dry_run: bool) -> Result<ScanSummary> {
+    run_scan_with_options(
+        config_path,
+        ScanOptions {
+            dry_run,
+            verbose: false,
+        },
+    )
+}
+
+pub fn run_scan_with_options(
+    config_path: Option<&Path>,
+    options: ScanOptions,
+) -> Result<ScanSummary> {
     let (config, _) = load_config(config_path)?;
-    let state = if dry_run && config.scan.state_db.is_none() {
+    let state = if options.dry_run && config.scan.state_db.is_none() {
         StateStore::memory()?
     } else {
         let db_path = config
@@ -36,6 +55,9 @@ pub fn run_scan(config_path: Option<&Path>, dry_run: bool) -> Result<ScanSummary
     let mut summary = ScanSummary::default();
     for feed in &config.feeds {
         summary.feeds_scanned += 1;
+        if options.verbose {
+            eprintln!("scanning feed: {} ({})", feed.name, feed.url);
+        }
         let items = match scan_feed(feed, &config.scan, &state) {
             Ok(items) => items,
             Err(error) => {
@@ -44,6 +66,9 @@ pub fn run_scan(config_path: Option<&Path>, dry_run: bool) -> Result<ScanSummary
                 continue;
             }
         };
+        if options.verbose {
+            eprintln!("feed items fetched: {} ({})", items.len(), feed.name);
+        }
 
         for item in items {
             if state.has_seen_url(&item.url)? {
@@ -60,7 +85,7 @@ pub fn run_scan(config_path: Option<&Path>, dry_run: bool) -> Result<ScanSummary
                 matched_rule: decision.reason,
                 matched_entity: decision.matched_entity,
             };
-            if dry_run {
+            if options.dry_run {
                 println!("dry-run match: {}", event.wake_text());
             } else {
                 state.enqueue_event(&event)?;
@@ -69,12 +94,13 @@ pub fn run_scan(config_path: Option<&Path>, dry_run: bool) -> Result<ScanSummary
         }
     }
 
-    if !dry_run {
+    if !options.dry_run {
         deliver_pending(
             &config.openclaw,
             config.scan.timeout_seconds,
             &state,
             &mut summary,
+            options.verbose,
         )?;
     }
 
@@ -94,10 +120,17 @@ fn deliver_pending(
     timeout_seconds: u64,
     state: &StateStore,
     summary: &mut ScanSummary,
+    verbose: bool,
 ) -> Result<()> {
     let pending = state.pending_events()?;
     if pending.is_empty() {
+        if verbose {
+            eprintln!("delivery queue empty");
+        }
         return Ok(());
+    }
+    if verbose {
+        eprintln!("delivering pending events: {}", pending.len());
     }
 
     let client = OpenClawClient::from_config(openclaw, Duration::from_secs(timeout_seconds))?;

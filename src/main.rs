@@ -5,7 +5,10 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "feedwake")]
 #[command(about = "Source-aware India market feed notifier for OpenClaw")]
+#[command(version)]
 struct Cli {
+    #[arg(long, short, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -44,7 +47,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Scan { config, dry_run } => {
-            let summary = feedwake::app::run_scan(config.as_deref(), dry_run)?;
+            let summary = feedwake::app::run_scan_with_options(
+                config.as_deref(),
+                feedwake::app::ScanOptions {
+                    dry_run,
+                    verbose: cli.verbose,
+                },
+            )?;
             println!(
                 "scan complete: feeds={}, new_items={}, enqueued={}, delivered={}",
                 summary.feeds_scanned,

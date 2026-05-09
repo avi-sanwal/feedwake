@@ -93,6 +93,53 @@ fn posts_batched_feedwake_event_with_bearer_token_and_article_details() {
         payload["articles"][1]["url"],
         "https://example.com/hdfc.pdf"
     );
+    assert!(payload.get("sessionKey").is_none());
+}
+
+#[test]
+fn posts_batched_feedwake_event_with_request_session_key() {
+    let server = Server::http("127.0.0.1:0").expect("server");
+    let address = server.server_addr().to_string();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut request = server.recv().expect("request");
+        let mut body = String::new();
+        request.as_reader().read_to_string(&mut body).expect("body");
+        request
+            .respond(Response::from_string("ok"))
+            .expect("response");
+        sender.send(body).expect("send");
+    });
+
+    std::env::set_var("OPENCLAW_HOOK_TOKEN", "secret-token");
+    let client = OpenClawClient::from_config(
+        &OpenClawConfig {
+            wake_url: format!("http://{}/hooks/feed-wake", address),
+            token_env: "OPENCLAW_HOOK_TOKEN".to_string(),
+            token_env_file: None,
+            mode: "now".to_string(),
+            max_articles_per_wake: 3,
+        },
+        Duration::from_secs(5),
+    )
+    .expect("client");
+
+    client
+        .post_batch_with_session_key(
+            &[event(
+                "https://example.com/reliance.pdf",
+                "Reliance Industries Limited",
+            )],
+            Some("hook:feedwake:test-batch"),
+        )
+        .expect("post");
+
+    let body = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("posted");
+    let payload: Value = serde_json::from_str(&body).expect("json payload");
+
+    assert_eq!(payload["sessionKey"], "hook:feedwake:test-batch");
 }
 
 #[test]

@@ -55,21 +55,20 @@ installs a managed current-user crontab block that runs every 5 minutes by
 default. Pass `--openclaw-config-dir`, `--frequency-minutes`, `--config`, or
 `--feedwake-bin` to override those defaults.
 
-The managed crontab entry sources `~/.openclaw/.env` before running FeedWake, so
-that file is a good place to keep `OPENCLAW_HOOK_TOKEN` for unattended cron runs.
-It runs `feedwake --verbose scan` and appends timestamped output to
-`$XDG_STATE_HOME/feedwake/feedwake.log`, or
+The managed crontab entry runs `feedwake --verbose scan` with FeedWake-owned
+file logging. FeedWake writes timestamped output to `/var/log/feedwake/feedwake.log`
+when that directory already exists and is writable by the installing user,
+otherwise `$XDG_STATE_HOME/feedwake/feedwake.log`, or
 `$HOME/.local/state/feedwake/feedwake.log` when `XDG_STATE_HOME` is not set.
-Before each scan, the cron script rotates that file when it reaches 1 MiB and
-keeps 5 rotated logs by default. Override those defaults with `--log-file`,
-`--log-max-bytes`, and `--log-rotate-count`. Rerun
-`feedwake openclaw install` after upgrading FeedWake to refresh an older managed
-crontab entry.
+FeedWake rotates that file when it reaches 1 MiB and keeps 5 rotated logs by
+default. Override those defaults with `--log-file`, `--log-max-bytes`, and
+`--log-rotate-count`. Rerun `feedwake openclaw install` after upgrading FeedWake
+to refresh an older managed crontab entry.
 
 Manual cron example:
 
 ```cron
-*/5 * * * * /bin/sh -c 'mkdir -p "$HOME/.local/state/feedwake"; set -a; . "$HOME/.openclaw/.env" 2>/dev/null; set +a; exec /usr/local/bin/feedwake --verbose scan --config /etc/feedwake.toml >> "$HOME/.local/state/feedwake/feedwake.log" 2>&1'
+*/5 * * * * /usr/local/bin/feedwake --verbose scan --config /etc/feedwake.toml --log-file "$HOME/.local/state/feedwake/feedwake.log" --log-max-bytes 1048576 --log-rotate-count 5
 ```
 
 If `--config` is omitted, FeedWake searches:
@@ -82,18 +81,19 @@ The default OpenClaw route is local loopback delivery to `/hooks/feed-wake`.
 Keep the hook token in the environment using the configured `token_env`.
 FeedWake sends one webhook call per scan with up to `openclaw.max_articles_per_wake`
 matched articles, defaulting to 3. Extra pending articles remain in SQLite and
-are delivered by a later cron run.
+are delivered by a later cron run. Each webhook batch includes a unique
+`sessionKey` with the `hook:feedwake:` prefix so a stalled OpenClaw run does not
+block later FeedWake batches in the same long-lived hook session.
 
 ## Cron
 
 FeedWake is intentionally not a daemon in v1. Let cron own scheduling:
 
 ```cron
-*/5 * * * * /bin/sh -c 'mkdir -p "$HOME/.local/state/feedwake"; set -a; . "$HOME/.openclaw/.env" 2>/dev/null; set +a; exec /usr/local/bin/feedwake --verbose scan --config /etc/feedwake.toml >> "$HOME/.local/state/feedwake/feedwake.log" 2>&1'
+*/5 * * * * /usr/local/bin/feedwake --verbose scan --config /etc/feedwake.toml --log-file "$HOME/.local/state/feedwake/feedwake.log" --log-max-bytes 1048576 --log-rotate-count 5
 ```
 
-The installer writes the full managed cron entry, including log rotation. Check
-the active entry with:
+The installer writes the full managed cron entry. Check the active entry with:
 
 ```bash
 crontab -l

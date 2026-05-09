@@ -132,9 +132,7 @@ pub fn patch_openclaw_config(raw_config: &str, hook_token_env: &str) -> Result<V
     hooks
         .entry("defaultSessionKey".to_string())
         .or_insert_with(|| Value::String(DEFAULT_SESSION_KEY.to_string()));
-    hooks
-        .entry("allowRequestSessionKey".to_string())
-        .or_insert(Value::Bool(false));
+    hooks.insert("allowRequestSessionKey".to_string(), Value::Bool(true));
     hooks
         .entry("allowedSessionKeyPrefixes".to_string())
         .or_insert_with(|| json!(["hook:"]));

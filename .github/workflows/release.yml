@@ -175,9 +175,9 @@ jobs:
             echo
             echo "Assets are uploaded by the release build jobs before publication."
             echo
-            echo "- Linux x86_64: \`feedwake-${tag}-x86_64-unknown-linux-gnu.tar.gz\`"
-            echo "- macOS Intel: \`feedwake-${tag}-x86_64-apple-darwin.tar.gz\`"
-            echo "- Windows x86_64: \`feedwake-${tag}-x86_64-pc-windows-msvc.zip\`"
+            echo "- Linux x86_64: \`feedwake-${tag}-x86_64-linux-gnu.tar.gz\`"
+            echo "- macOS Intel: \`feedwake-${tag}-x86_64-macos.tar.gz\`"
+            echo "- Windows x86_64: \`feedwake-${tag}-x86_64-windows-msvc.zip\`"
           } >> release-notes.md
 
       - name: Create draft GitHub release
@@ -201,14 +201,17 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            platform: x86_64-linux-gnu
             archive_ext: tar.gz
             bin_name: feedwake
           - os: macos-13
             target: x86_64-apple-darwin
+            platform: x86_64-macos
             archive_ext: tar.gz
             bin_name: feedwake
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: x86_64-windows-msvc
             archive_ext: zip
             bin_name: feedwake.exe
     runs-on: ${{ matrix.os }}
@@ -235,22 +238,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          artifact="feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}"
-          mkdir -p "${artifact}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "${artifact}/"
-          cp README.md config/feedwake.example.toml "${artifact}/"
-          tar -czf "${artifact}.tar.gz" "${artifact}"
+          artifact="feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.platform }}"
+          package_dir="${artifact}-package"
+          mkdir -p "${package_dir}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "${package_dir}/"
+          cp README.md config/feedwake.example.toml "${package_dir}/"
+          tar -czf "${artifact}.tar.gz" -C "${package_dir}" "${{ matrix.bin_name }}" README.md feedwake.example.toml
 
       - name: Package Windows artifact
         if: matrix.archive_ext == 'zip'
         shell: pwsh
         run: |
-          $artifact = "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $artifact | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" $artifact
-          Copy-Item README.md $artifact
-          Copy-Item config/feedwake.example.toml $artifact
-          Compress-Archive -Path $artifact -DestinationPath "$artifact.zip"
+          $artifact = "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.platform }}"
+          $packageDir = "$artifact-package"
+          New-Item -ItemType Directory -Path $packageDir | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" $packageDir
+          Copy-Item README.md $packageDir
+          Copy-Item config/feedwake.example.toml $packageDir
+          Compress-Archive -Path "$packageDir/*" -DestinationPath "$artifact.zip"
 
       - name: Upload artifact to release
         env:
@@ -260,9 +265,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
-            gh release upload "${{ needs.prepare.outputs.tag }}" "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.zip" --clobber
+            gh release upload "${{ needs.prepare.outputs.tag }}" "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.platform }}.zip" --clobber
           else
-            gh release upload "${{ needs.prepare.outputs.tag }}" "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.tar.gz" --clobber
+            gh release upload "${{ needs.prepare.outputs.tag }}" "feedwake-${{ needs.prepare.outputs.tag }}-${{ matrix.platform }}.tar.gz" --clobber
           fi
 
   publish:

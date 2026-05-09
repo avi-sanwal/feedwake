@@ -1,9 +1,109 @@
 use feedwake::openclaw::{
-    patch_openclaw_config, render_managed_crontab, resolve_install_options, OpenClawInstallOptions,
-    OpenClawInstallRequest, DEFAULT_HOOK_TOKEN_ENV,
+    generate_hook_token, patch_openclaw_config, reconcile_feedwake_config,
+    reconcile_openclaw_env_file, render_managed_crontab, resolve_install_options,
+    OpenClawInstallOptions, OpenClawInstallRequest, DEFAULT_HOOK_TOKEN_ENV,
 };
 use serde_json::json;
 use std::path::PathBuf;
+
+#[test]
+fn render_default_feedwake_config_uses_openclaw_port_path_and_token_env() {
+    let config = feedwake::openclaw::render_default_feedwake_config(
+        r#"
+        {
+          gateway: { port: 19001 },
+          hooks: {
+            token: "${OPENCLAW_CUSTOM_HOOK_TOKEN}",
+            path: "/ingress",
+          },
+        }
+        "#,
+        DEFAULT_HOOK_TOKEN_ENV,
+    )
+    .expect("default config should render");
+
+    assert!(config.contains("[openclaw]\n"));
+    assert!(config.contains("wake_url = \"http://127.0.0.1:19001/ingress/wake\""));
+    assert!(config.contains("token_env = \"OPENCLAW_CUSTOM_HOOK_TOKEN\""));
+    assert!(config.contains("[scan]\n"));
+    assert!(config.contains("[[feeds]]\n"));
+}
+
+#[test]
+fn render_default_feedwake_config_uses_safe_openclaw_defaults() {
+    let config = feedwake::openclaw::render_default_feedwake_config("{}", DEFAULT_HOOK_TOKEN_ENV)
+        .expect("default config should render");
+
+    assert!(config.contains("wake_url = \"http://127.0.0.1:18789/hooks/wake\""));
+    assert!(config.contains("token_env = \"OPENCLAW_HOOK_TOKEN\""));
+}
+
+#[test]
+fn generate_hook_token_returns_secure_hex_token() {
+    let first = generate_hook_token().expect("token should generate");
+    let second = generate_hook_token().expect("token should generate");
+
+    assert_eq!(first.len(), 64);
+    assert!(first.chars().all(|value| value.is_ascii_hexdigit()));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn reconcile_openclaw_env_file_adds_or_updates_token_value() {
+    let rendered = reconcile_openclaw_env_file(
+        "OTHER=value\nOPENCLAW_HOOK_TOKEN=old\n",
+        DEFAULT_HOOK_TOKEN_ENV,
+        "new-token",
+    )
+    .expect("env file should reconcile");
+
+    assert!(rendered.contains("OTHER=value"));
+    assert!(rendered.contains("OPENCLAW_HOOK_TOKEN='new-token'"));
+    assert!(!rendered.contains("OPENCLAW_HOOK_TOKEN=old"));
+}
+
+#[test]
+fn reconcile_feedwake_config_updates_existing_openclaw_values_only() {
+    let existing = r#"
+[openclaw]
+wake_url = "http://127.0.0.1:18789/hooks/wake"
+token_env = "OPENCLAW_HOOK_TOKEN"
+mode = "later"
+
+[scan]
+timeout_seconds = 42
+max_items_per_feed = 7
+max_response_bytes = 2048
+conditional_get = false
+
+[[feeds]]
+name = "Custom Feed"
+url = "https://example.com/feed.xml"
+source_type = "media"
+filter_profile = "media_high_precision"
+"#;
+
+    let updated = reconcile_feedwake_config(
+        existing,
+        r#"
+        {
+          gateway: { port: 19002 },
+          hooks: {
+            token: "${OPENCLAW_UPDATED_HOOK_TOKEN}",
+            path: "/custom-hooks",
+          },
+        }
+        "#,
+        DEFAULT_HOOK_TOKEN_ENV,
+    )
+    .expect("existing config should update");
+
+    assert!(updated.contains("wake_url = \"http://127.0.0.1:19002/custom-hooks/wake\""));
+    assert!(updated.contains("token_env = \"OPENCLAW_UPDATED_HOOK_TOKEN\""));
+    assert!(updated.contains("mode = \"later\""));
+    assert!(updated.contains("timeout_seconds = 42"));
+    assert!(updated.contains("name = \"Custom Feed\""));
+}
 
 #[test]
 fn patch_openclaw_config_enables_hooks_with_env_token() {

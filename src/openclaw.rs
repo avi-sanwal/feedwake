@@ -5,8 +5,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use toml_edit::{value, DocumentMut};
 
-use crate::config::load_config;
+use crate::config::default_config_paths;
 
 pub const DEFAULT_HOOK_TOKEN_ENV: &str = "OPENCLAW_HOOK_TOKEN";
 
@@ -14,6 +15,9 @@ const CRON_BLOCK_START: &str = "# feedwake openclaw integration start";
 const CRON_BLOCK_END: &str = "# feedwake openclaw integration end";
 const DEFAULT_HOOK_PATH: &str = "/hooks";
 const DEFAULT_SESSION_KEY: &str = "hook:feedwake";
+const DEFAULT_GATEWAY_PORT: u16 = 18789;
+const DEFAULT_WAKE_ACTION_PATH: &str = "wake";
+const GENERATED_TOKEN_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenClawInstallRequest {
@@ -44,7 +48,8 @@ pub struct OpenClawInstallSummary {
 
 pub fn install_openclaw(request: OpenClawInstallRequest) -> Result<OpenClawInstallSummary> {
     let options = resolve_install_options(request)?;
-    write_openclaw_config(&options)?;
+    let raw_openclaw_config = write_openclaw_config(&options)?;
+    write_feedwake_config(&options, &raw_openclaw_config)?;
     install_user_crontab(&options)?;
 
     Ok(OpenClawInstallSummary {
@@ -63,7 +68,7 @@ pub fn resolve_install_options(request: OpenClawInstallRequest) -> Result<OpenCl
         resolve_openclaw_config_location(request.openclaw_config_dir.as_deref())?;
     let feedwake_config_path = match request.feedwake_config_path {
         Some(path) => path,
-        None => load_config(None)?.1,
+        None => resolve_feedwake_config_path()?,
     };
     let feedwake_bin = match request.feedwake_bin {
         Some(path) => path,
@@ -118,6 +123,73 @@ pub fn patch_openclaw_config(raw_config: &str, hook_token_env: &str) -> Result<V
     Ok(config)
 }
 
+pub fn generate_hook_token() -> Result<String> {
+    let mut bytes = [0u8; GENERATED_TOKEN_BYTES];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| anyhow!("failed to generate OpenClaw hook token: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub fn reconcile_openclaw_env_file(
+    existing_env: &str,
+    token_env: &str,
+    token_value: &str,
+) -> Result<String> {
+    validate_env_var_name(token_env)?;
+    if token_value.is_empty() {
+        bail!("OpenClaw hook token value cannot be empty");
+    }
+
+    let mut updated = false;
+    let mut lines = Vec::new();
+    for line in existing_env.lines() {
+        if line.trim_start().starts_with('#') || !line.starts_with(&format!("{token_env}=")) {
+            lines.push(line.to_string());
+            continue;
+        }
+        lines.push(format_env_assignment(token_env, token_value));
+        updated = true;
+    }
+
+    if !updated {
+        lines.push(format_env_assignment(token_env, token_value));
+    }
+
+    let mut rendered = lines.join("\n");
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+pub fn render_default_feedwake_config(
+    raw_openclaw_config: &str,
+    hook_token_env: &str,
+) -> Result<String> {
+    reconcile_feedwake_config(
+        default_feedwake_config_template(),
+        raw_openclaw_config,
+        hook_token_env,
+    )
+}
+
+pub fn reconcile_feedwake_config(
+    raw_feedwake_config: &str,
+    raw_openclaw_config: &str,
+    hook_token_env: &str,
+) -> Result<String> {
+    let endpoint = resolve_openclaw_endpoint(raw_openclaw_config, hook_token_env)?;
+    let mut document = raw_feedwake_config
+        .parse::<DocumentMut>()
+        .context("failed to parse FeedWake TOML config")?;
+
+    document["openclaw"]["wake_url"] = value(endpoint.wake_url);
+    document["openclaw"]["token_env"] = value(endpoint.token_env);
+    if !document["openclaw"]["mode"].is_value() {
+        document["openclaw"]["mode"] = value("now");
+    }
+
+    Ok(document.to_string())
+}
+
 pub fn render_managed_crontab(existing: &str, options: &OpenClawInstallOptions) -> Result<String> {
     validate_frequency(options.frequency_minutes)?;
 
@@ -166,7 +238,7 @@ pub fn render_managed_crontab(existing: &str, options: &OpenClawInstallOptions) 
     Ok(rendered)
 }
 
-fn write_openclaw_config(options: &OpenClawInstallOptions) -> Result<()> {
+fn write_openclaw_config(options: &OpenClawInstallOptions) -> Result<String> {
     fs::create_dir_all(&options.openclaw_config_dir).with_context(|| {
         format!(
             "failed to create OpenClaw config directory {}",
@@ -186,13 +258,146 @@ fn write_openclaw_config(options: &OpenClawInstallOptions) -> Result<()> {
             })
         }
     };
-    let patched = patch_openclaw_config(&raw_config, &options.hook_token_env)?;
+    let mut patched = patch_openclaw_config(&raw_config, &options.hook_token_env)?;
+    let (token_env, existing_literal_token) =
+        normalize_openclaw_hook_token(&mut patched, &options.hook_token_env)?;
+    ensure_openclaw_env_token(
+        &options.openclaw_config_dir,
+        &token_env,
+        existing_literal_token.as_deref(),
+    )?;
     let rendered = serde_json::to_string_pretty(&patched)
         .context("failed to render patched OpenClaw config")?;
     fs::write(&options.openclaw_config_path, format!("{rendered}\n")).with_context(|| {
         format!(
             "failed to write OpenClaw config {}",
             options.openclaw_config_path.display()
+        )
+    })?;
+
+    Ok(rendered)
+}
+
+fn normalize_openclaw_hook_token(
+    config: &mut Value,
+    hook_token_env: &str,
+) -> Result<(String, Option<String>)> {
+    validate_env_var_name(hook_token_env)?;
+    let hooks = config
+        .get_mut("hooks")
+        .and_then(Value::as_object_mut)
+        .context("OpenClaw hooks config must be an object")?;
+    let token = hooks
+        .get("token")
+        .and_then(Value::as_str)
+        .context("OpenClaw hooks.token must be a string")?
+        .to_string();
+
+    if let Some(token_env) = extract_env_var_reference(&token) {
+        return Ok((token_env, None));
+    }
+
+    hooks.insert(
+        "token".to_string(),
+        Value::String(format!("${{{}}}", hook_token_env)),
+    );
+    Ok((hook_token_env.to_string(), Some(token)))
+}
+
+fn ensure_openclaw_env_token(
+    openclaw_config_dir: &Path,
+    token_env: &str,
+    preferred_token: Option<&str>,
+) -> Result<()> {
+    validate_env_var_name(token_env)?;
+    let env_file = openclaw_config_dir.join(".env");
+    let existing_env = match fs::read_to_string(&env_file) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read OpenClaw env file {}", env_file.display())
+            })
+        }
+    };
+
+    if env_file_contains_token(&existing_env, token_env) {
+        return Ok(());
+    }
+
+    let token_value = match preferred_token {
+        Some(token) if !token.is_empty() => token.to_string(),
+        _ => env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(Ok)
+            .unwrap_or_else(generate_hook_token)?,
+    };
+
+    let rendered = reconcile_openclaw_env_file(&existing_env, token_env, &token_value)?;
+    fs::create_dir_all(openclaw_config_dir).with_context(|| {
+        format!(
+            "failed to create OpenClaw config directory {}",
+            openclaw_config_dir.display()
+        )
+    })?;
+    fs::write(&env_file, rendered)
+        .with_context(|| format!("failed to write OpenClaw env file {}", env_file.display()))?;
+
+    Ok(())
+}
+
+fn env_file_contains_token(existing_env: &str, token_env: &str) -> bool {
+    existing_env
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .any(|line| {
+            line.strip_prefix(&format!("{token_env}="))
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
+}
+
+fn format_env_assignment(name: &str, value: &str) -> String {
+    format!("{name}={}", shell_quote(value))
+}
+
+fn write_feedwake_config(
+    options: &OpenClawInstallOptions,
+    raw_openclaw_config: &str,
+) -> Result<()> {
+    let raw_feedwake_config = match fs::read_to_string(&options.feedwake_config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            default_feedwake_config_template().to_string()
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read FeedWake config {}",
+                    options.feedwake_config_path.display()
+                )
+            })
+        }
+    };
+
+    let rendered = reconcile_feedwake_config(
+        &raw_feedwake_config,
+        raw_openclaw_config,
+        &options.hook_token_env,
+    )?;
+    if let Some(parent) = options.feedwake_config_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create FeedWake config directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&options.feedwake_config_path, rendered).with_context(|| {
+        format!(
+            "failed to write FeedWake config {}",
+            options.feedwake_config_path.display()
         )
     })?;
 
@@ -270,6 +475,168 @@ fn resolve_openclaw_config_location(explicit_dir: Option<&Path>) -> Result<(Path
     let dir = PathBuf::from(home).join(".openclaw");
     let path = dir.join("openclaw.json");
     Ok((dir, path))
+}
+
+fn resolve_feedwake_config_path() -> Result<PathBuf> {
+    if let Some(existing_path) = default_config_paths()
+        .into_iter()
+        .find(|path| path.exists())
+    {
+        return Ok(existing_path);
+    }
+
+    let home = env::var_os("HOME").context("HOME is not set; pass --config")?;
+    Ok(PathBuf::from(home).join(".config/feedwake/config.toml"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenClawEndpoint {
+    wake_url: String,
+    token_env: String,
+}
+
+fn resolve_openclaw_endpoint(
+    raw_openclaw_config: &str,
+    hook_token_env: &str,
+) -> Result<OpenClawEndpoint> {
+    validate_env_var_name(hook_token_env)?;
+    let openclaw_config = parse_openclaw_config(raw_openclaw_config)?;
+    let port = openclaw_config
+        .pointer("/gateway/port")
+        .and_then(Value::as_u64)
+        .map(validate_port)
+        .transpose()?
+        .unwrap_or(DEFAULT_GATEWAY_PORT);
+    let hook_path = openclaw_config
+        .pointer("/hooks/path")
+        .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_HOOK_PATH);
+    let token_env = openclaw_config
+        .pointer("/hooks/token")
+        .and_then(Value::as_str)
+        .and_then(extract_env_var_reference)
+        .unwrap_or_else(|| hook_token_env.to_string());
+
+    Ok(OpenClawEndpoint {
+        wake_url: format!(
+            "http://127.0.0.1:{port}/{}/{}",
+            hook_path.trim_matches('/'),
+            DEFAULT_WAKE_ACTION_PATH
+        ),
+        token_env,
+    })
+}
+
+fn parse_openclaw_config(raw_config: &str) -> Result<Value> {
+    if raw_config.trim().is_empty() {
+        Ok(json!({}))
+    } else {
+        json5::from_str(raw_config).context("failed to parse OpenClaw JSON5 config")
+    }
+}
+
+fn validate_port(port: u64) -> Result<u16> {
+    if (1..=u16::MAX as u64).contains(&port) {
+        Ok(port as u16)
+    } else {
+        bail!("OpenClaw gateway.port must be between 1 and {}", u16::MAX)
+    }
+}
+
+fn extract_env_var_reference(value: &str) -> Option<String> {
+    let name = value.strip_prefix("${")?.strip_suffix('}')?;
+    validate_env_var_name(name).ok()?;
+    Some(name.to_string())
+}
+
+fn default_feedwake_config_template() -> &'static str {
+    r#"[openclaw]
+wake_url = "http://127.0.0.1:18789/hooks/wake"
+token_env = "OPENCLAW_HOOK_TOKEN"
+mode = "now"
+
+[scan]
+timeout_seconds = 10
+max_items_per_feed = 30
+max_response_bytes = 1048576
+conditional_get = true
+
+[[watchlist]]
+symbol = "RELIANCE"
+name = "Reliance Industries Limited"
+isin = "INE002A01018"
+aliases = ["Reliance Industries", "RIL"]
+
+[[watchlist]]
+symbol = "HDFCBANK"
+name = "HDFC Bank Limited"
+isin = "INE040A01034"
+aliases = ["HDFC Bank"]
+
+[[feeds]]
+name = "NSE Announcements"
+url = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
+source_type = "nse"
+filter_profile = "exchange_watchlist"
+
+[[feeds]]
+name = "SEBI"
+url = "https://www.sebi.gov.in/sebirss.xml"
+source_type = "sebi"
+filter_profile = "authority_passthrough"
+
+[[feeds]]
+name = "RBI Press Releases"
+url = "https://rbi.org.in/pressreleases_rss.xml"
+source_type = "rbi"
+filter_profile = "authority_passthrough"
+
+[[feeds]]
+name = "Livemint Markets"
+url = "https://www.livemint.com/rss/markets"
+source_type = "media"
+filter_profile = "media_high_precision"
+user_agent = "Mozilla/5.0"
+
+[exchange_filters]
+category_allowlist = [
+  "Financial Results",
+  "Board Meeting",
+  "Corporate Action",
+  "Insider Trading",
+  "Credit Rating",
+  "Default",
+  "Fund Raising",
+  "Acquisition",
+  "Litigation",
+  "Order"
+]
+
+[media_filters]
+require_watchlist_match = true
+keyword_groups = [
+  "results",
+  "guidance",
+  "merger",
+  "acquisition",
+  "stake sale",
+  "fundraise",
+  "default",
+  "rating downgrade",
+  "rating upgrade",
+  "regulatory action",
+  "tax demand",
+  "large order",
+  "management change"
+]
+exclude_keywords = [
+  "sponsored",
+  "lifestyle",
+  "opinion",
+  "explained",
+  "personal finance"
+]
+"#
 }
 
 fn cron_entry(options: &OpenClawInstallOptions) -> String {

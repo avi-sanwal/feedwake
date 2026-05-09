@@ -25,6 +25,12 @@ Set the OpenClaw hook token in the environment:
 export OPENCLAW_HOOK_TOKEN="..."
 ```
 
+Install the OpenClaw webhook configuration and a user crontab entry:
+
+```bash
+target/release/feedwake openclaw install
+```
+
 Run a dry scan without writing state:
 
 ```bash
@@ -37,10 +43,20 @@ Run with an explicit config:
 feedwake scan --config /etc/feedwake.toml
 ```
 
-Cron example:
+The installer discovers `~/.openclaw/openclaw.json`, or the parent directory of
+`OPENCLAW_CONFIG_PATH` when that variable is set. It enables OpenClaw hooks with
+the token reference `${OPENCLAW_HOOK_TOKEN}` when no hook token is already
+configured, and installs a managed current-user crontab block that runs every 5
+minutes by default. Pass `--openclaw-config-dir`, `--frequency-minutes`,
+`--config`, or `--feedwake-bin` to override those defaults.
+
+The managed crontab entry sources `~/.openclaw/.env` before running FeedWake, so
+that file is a good place to keep `OPENCLAW_HOOK_TOKEN` for unattended cron runs.
+
+Manual cron example:
 
 ```cron
-*/5 * * * * OPENCLAW_HOOK_TOKEN=... /usr/local/bin/feedwake scan --config /etc/feedwake.toml
+*/5 * * * * /bin/sh -c '. "$HOME/.openclaw/.env" 2>/dev/null; exec /usr/local/bin/feedwake scan --config /etc/feedwake.toml'
 ```
 
 If `--config` is omitted, FeedWake searches:
@@ -49,7 +65,7 @@ If `--config` is omitted, FeedWake searches:
 2. `$HOME/.config/feedwake/config.toml`
 3. `$HOME/.feedwake.toml`
 
-The default OpenClaw route is local loopback delivery to `/hooks/feed-wake`.
+The default OpenClaw route is local loopback delivery to `/hooks/wake`.
 Keep the hook token in the environment using the configured `token_env`.
 
 ## Cron
@@ -57,7 +73,7 @@ Keep the hook token in the environment using the configured `token_env`.
 FeedWake is intentionally not a daemon in v1. Let cron own scheduling:
 
 ```cron
-*/5 * * * * OPENCLAW_HOOK_TOKEN=... /usr/local/bin/feedwake scan --config /etc/feedwake.toml
+*/5 * * * * /bin/sh -c '. "$HOME/.openclaw/.env" 2>/dev/null; exec /usr/local/bin/feedwake scan --config /etc/feedwake.toml'
 ```
 
 State is stored in SQLite. If `scan.state_db` is not configured, FeedWake tries
@@ -75,13 +91,13 @@ FeedWake has four main pieces:
 - **SQLite state**: tracks seen URLs, feed cache headers, and pending delivery
   events.
 - **OpenClaw delivery**: posts compact local wake events to
-  `http://127.0.0.1:18789/hooks/feed-wake` using a bearer token from the
+  `http://127.0.0.1:18789/hooks/wake` using a bearer token from the
   environment.
 
 The scan flow is:
 
 ```text
-cron -> feedwake scan -> fetch feeds -> filter locally -> SQLite outbox -> /hooks/feed-wake
+cron -> feedwake scan -> fetch feeds -> filter locally -> SQLite outbox -> /hooks/wake
 ```
 
 ## Filtering Profiles

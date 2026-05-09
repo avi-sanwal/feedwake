@@ -18,6 +18,26 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    Openclaw {
+        #[command(subcommand)]
+        command: OpenClawCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OpenClawCommands {
+    Install {
+        #[arg(long)]
+        openclaw_config_dir: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long, default_value_t = 5)]
+        frequency_minutes: u8,
+        #[arg(long)]
+        feedwake_bin: Option<PathBuf>,
+        #[arg(long, default_value = feedwake::openclaw::DEFAULT_HOOK_TOKEN_ENV)]
+        hook_token_env: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -33,6 +53,32 @@ fn main() -> Result<()> {
                 summary.events_delivered
             );
         }
+        Commands::Openclaw { command } => match command {
+            OpenClawCommands::Install {
+                openclaw_config_dir,
+                config,
+                frequency_minutes,
+                feedwake_bin,
+                hook_token_env,
+            } => {
+                let summary = feedwake::openclaw::install_openclaw(
+                    feedwake::openclaw::OpenClawInstallRequest {
+                        openclaw_config_dir,
+                        feedwake_config_path: config,
+                        feedwake_bin,
+                        frequency_minutes,
+                        hook_token_env,
+                    },
+                )?;
+                println!(
+                    "openclaw install complete: config={}, feedwake_config={}, feedwake_bin={}, frequency_minutes={}",
+                    summary.openclaw_config_path.display(),
+                    summary.feedwake_config_path.display(),
+                    summary.feedwake_bin.display(),
+                    summary.frequency_minutes
+                );
+            }
+        },
     }
     Ok(())
 }

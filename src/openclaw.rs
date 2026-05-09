@@ -28,6 +28,9 @@ pub struct OpenClawInstallRequest {
     pub feedwake_bin: Option<PathBuf>,
     pub frequency_minutes: u8,
     pub hook_token_env: String,
+    pub log_file: Option<PathBuf>,
+    pub log_max_bytes: u64,
+    pub log_rotate_count: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,9 @@ pub struct OpenClawInstallOptions {
     pub feedwake_bin: PathBuf,
     pub frequency_minutes: u8,
     pub hook_token_env: String,
+    pub log_file: PathBuf,
+    pub log_max_bytes: u64,
+    pub log_rotate_count: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +52,7 @@ pub struct OpenClawInstallSummary {
     pub feedwake_config_path: PathBuf,
     pub feedwake_bin: PathBuf,
     pub frequency_minutes: u8,
+    pub log_file: PathBuf,
 }
 
 pub fn install_openclaw(request: OpenClawInstallRequest) -> Result<OpenClawInstallSummary> {
@@ -59,12 +66,14 @@ pub fn install_openclaw(request: OpenClawInstallRequest) -> Result<OpenClawInsta
         feedwake_config_path: options.feedwake_config_path,
         feedwake_bin: options.feedwake_bin,
         frequency_minutes: options.frequency_minutes,
+        log_file: options.log_file,
     })
 }
 
 pub fn resolve_install_options(request: OpenClawInstallRequest) -> Result<OpenClawInstallOptions> {
     validate_frequency(request.frequency_minutes)?;
     validate_env_var_name(&request.hook_token_env)?;
+    validate_log_rotation(request.log_max_bytes, request.log_rotate_count)?;
 
     let (openclaw_config_dir, openclaw_config_path) =
         resolve_openclaw_config_location(request.openclaw_config_dir.as_deref())?;
@@ -76,6 +85,10 @@ pub fn resolve_install_options(request: OpenClawInstallRequest) -> Result<OpenCl
         Some(path) => path,
         None => env::current_exe().context("failed to discover current feedwake executable")?,
     };
+    let log_file = match request.log_file {
+        Some(path) => path,
+        None => resolve_feedwake_log_file()?,
+    };
 
     Ok(OpenClawInstallOptions {
         openclaw_config_dir,
@@ -84,6 +97,9 @@ pub fn resolve_install_options(request: OpenClawInstallRequest) -> Result<OpenCl
         feedwake_bin,
         frequency_minutes: request.frequency_minutes,
         hook_token_env: request.hook_token_env,
+        log_file,
+        log_max_bytes: request.log_max_bytes,
+        log_rotate_count: request.log_rotate_count,
     })
 }
 
@@ -184,7 +200,8 @@ pub fn reconcile_openclaw_env_file(
     let mut updated = false;
     let mut lines = Vec::new();
     for line in existing_env.lines() {
-        if line.trim_start().starts_with('#') || !line.starts_with(&format!("{token_env}=")) {
+        let assignment = env_assignment_name(line);
+        if line.trim_start().starts_with('#') || assignment.as_deref() != Some(token_env) {
             lines.push(line.to_string());
             continue;
         }
@@ -233,6 +250,7 @@ pub fn reconcile_feedwake_config(
 
 pub fn render_managed_crontab(existing: &str, options: &OpenClawInstallOptions) -> Result<String> {
     validate_frequency(options.frequency_minutes)?;
+    validate_log_rotation(options.log_max_bytes, options.log_rotate_count)?;
 
     let mut retained = Vec::new();
     let mut in_managed_block = false;
@@ -393,14 +411,26 @@ fn env_file_contains_token(existing_env: &str, token_env: &str) -> bool {
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .any(|line| {
-            line.strip_prefix(&format!("{token_env}="))
-                .map(|value| !value.trim().is_empty())
+            env_assignment(line)
+                .filter(|(name, _)| *name == token_env)
+                .map(|(_, value)| !value.trim().is_empty())
                 .unwrap_or(false)
         })
 }
 
 fn format_env_assignment(name: &str, value: &str) -> String {
-    format!("{name}={}", shell_quote(value))
+    format!("export {name}={}", shell_quote(value))
+}
+
+fn env_assignment_name(line: &str) -> Option<String> {
+    env_assignment(line).map(|(name, _)| name.to_string())
+}
+
+fn env_assignment(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let (name, value) = line.split_once('=')?;
+    Some((name.trim(), value))
 }
 
 fn write_feedwake_config(
@@ -528,6 +558,15 @@ fn resolve_feedwake_config_path() -> Result<PathBuf> {
 
     let home = env::var_os("HOME").context("HOME is not set; pass --config")?;
     Ok(PathBuf::from(home).join(".config/feedwake/config.toml"))
+}
+
+fn resolve_feedwake_log_file() -> Result<PathBuf> {
+    if let Some(state_home) = env::var_os("XDG_STATE_HOME") {
+        return Ok(PathBuf::from(state_home).join("feedwake/feedwake.log"));
+    }
+
+    let home = env::var_os("HOME").context("HOME is not set; pass --log-file")?;
+    Ok(PathBuf::from(home).join(".local/state/feedwake/feedwake.log"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -683,17 +722,49 @@ exclude_keywords = [
 
 fn cron_entry(options: &OpenClawInstallOptions) -> String {
     let env_file = options.openclaw_config_dir.join(".env");
+    let log_dir = options
+        .log_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let rotation_script = render_log_rotation_script(
+        &options.log_file,
+        options.log_max_bytes,
+        options.log_rotate_count,
+    );
     let script = format!(
-        "if [ -f {env_file} ]; then . {env_file}; fi; exec {bin} scan --config {config}",
+        "mkdir -p {log_dir}; {rotation_script}; if [ -f {env_file} ]; then set -a; . {env_file}; set +a; fi; exec {bin} --verbose scan --config {config} >> {log_file} 2>&1",
+        log_dir = shell_quote_path(&log_dir),
+        rotation_script = rotation_script,
         env_file = shell_quote_path(&env_file),
         bin = shell_quote_path(&options.feedwake_bin),
         config = shell_quote_path(&options.feedwake_config_path),
+        log_file = shell_quote_path(&options.log_file),
     );
     escape_cron_percent(&format!(
         "*/{} * * * * /bin/sh -c {}",
         options.frequency_minutes,
         shell_quote(&script)
     ))
+}
+
+fn render_log_rotation_script(log_file: &Path, max_bytes: u64, rotate_count: u8) -> String {
+    let log_file = shell_quote_path(log_file);
+    let mut script =
+        format!("if [ -f {log_file} ] && [ $(wc -c < {log_file}) -ge {max_bytes} ]; then");
+    for index in (1..rotate_count).rev() {
+        script.push_str(&format!(
+            " if [ -f {log_file}.{index} ]; then mv -f {log_file}.{index} {log_file}.{}; fi;",
+            index + 1
+        ));
+    }
+    if rotate_count > 0 {
+        script.push_str(&format!(" mv -f {log_file} {log_file}.1;"));
+    } else {
+        script.push_str(&format!(" : > {log_file};"));
+    }
+    script.push_str(" fi");
+    script
 }
 
 fn shell_quote_path(path: &Path) -> String {
@@ -714,6 +785,16 @@ fn validate_frequency(frequency_minutes: u8) -> Result<()> {
     } else {
         bail!("frequency must be between 1 and 59 minutes")
     }
+}
+
+fn validate_log_rotation(log_max_bytes: u64, log_rotate_count: u8) -> Result<()> {
+    if log_max_bytes == 0 {
+        bail!("log max bytes must be greater than 0")
+    }
+    if log_rotate_count > 30 {
+        bail!("log rotate count must be between 0 and 30")
+    }
+    Ok(())
 }
 
 fn validate_env_var_name(name: &str) -> Result<()> {

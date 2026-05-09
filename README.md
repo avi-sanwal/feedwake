@@ -44,11 +44,15 @@ feedwake scan --config /etc/feedwake.toml
 ```
 
 The installer discovers `~/.openclaw/openclaw.json`, or the parent directory of
-`OPENCLAW_CONFIG_PATH` when that variable is set. It enables OpenClaw hooks with
-the token reference `${OPENCLAW_HOOK_TOKEN}` when no hook token is already
-configured, and installs a managed current-user crontab block that runs every 5
-minutes by default. Pass `--openclaw-config-dir`, `--frequency-minutes`,
-`--config`, or `--feedwake-bin` to override those defaults.
+`OPENCLAW_CONFIG_PATH` when that variable is set. It enables OpenClaw hooks,
+updates or creates the FeedWake config at `$HOME/.config/feedwake/config.toml`,
+and reconciles FeedWake's OpenClaw URL and token environment variable from
+OpenClaw's `gateway.port`, `hooks.path`, and `hooks.token`. If no hook token is
+configured, it generates a secure random token, writes it to `~/.openclaw/.env`,
+and points both OpenClaw and FeedWake at the same environment variable. It also
+installs a managed current-user crontab block that runs every 5 minutes by
+default. Pass `--openclaw-config-dir`, `--frequency-minutes`, `--config`, or
+`--feedwake-bin` to override those defaults.
 
 The managed crontab entry sources `~/.openclaw/.env` before running FeedWake, so
 that file is a good place to keep `OPENCLAW_HOOK_TOKEN` for unattended cron runs.

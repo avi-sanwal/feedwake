@@ -150,8 +150,6 @@ jobs:
           previous_tag="${{ needs.prepare.outputs.previous_tag }}"
 
           {
-            echo "# FeedWake ${tag}"
-            echo
             if [[ "${previous_tag}" == "Cargo.toml" ]]; then
               echo "First public release of FeedWake."
             else

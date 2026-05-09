@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use std::fs;
@@ -117,11 +118,26 @@ impl StateStore {
     }
 
     pub fn pending_events(&self) -> Result<Vec<(i64, WakeEvent)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, source_name, title, item_url, payload_json, matched_rule, matched_entity
-             FROM outbox_events WHERE status = ?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![DeliveryStatus::Pending.as_str()], |row| {
+        self.query_pending_events(None)
+    }
+
+    pub fn pending_events_limit(&self, limit: usize) -> Result<Vec<(i64, WakeEvent)>> {
+        self.query_pending_events(Some(limit))
+    }
+
+    fn query_pending_events(&self, limit: Option<usize>) -> Result<Vec<(i64, WakeEvent)>> {
+        let query = match limit {
+            Some(_) => {
+                "SELECT id, source_name, title, item_url, payload_json, matched_rule, matched_entity
+                 FROM outbox_events WHERE status = ?1 ORDER BY id LIMIT ?2"
+            }
+            None => {
+                "SELECT id, source_name, title, item_url, payload_json, matched_rule, matched_entity
+                 FROM outbox_events WHERE status = ?1 ORDER BY id"
+            }
+        };
+        let mut stmt = self.conn.prepare(query)?;
+        let map_row = |row: &rusqlite::Row<'_>| {
             let payload: String = row.get(4)?;
             let parsed: serde_json::Value =
                 serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
@@ -138,7 +154,11 @@ impl StateStore {
                     .get("description")
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned),
-                published_at: None,
+                published_at: parsed
+                    .get("publishedAt")
+                    .and_then(|value| value.as_str())
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&Utc)),
             };
             Ok((
                 row.get(0)?,
@@ -148,7 +168,15 @@ impl StateStore {
                     matched_entity: row.get(6)?,
                 },
             ))
-        })?;
+        };
+
+        let rows = match limit {
+            Some(limit) => stmt.query_map(
+                params![DeliveryStatus::Pending.as_str(), limit as i64],
+                map_row,
+            )?,
+            None => stmt.query_map(params![DeliveryStatus::Pending.as_str()], map_row)?,
+        };
 
         let mut events = Vec::new();
         for row in rows {

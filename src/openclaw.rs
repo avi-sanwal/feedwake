@@ -16,7 +16,9 @@ const CRON_BLOCK_END: &str = "# feedwake openclaw integration end";
 const DEFAULT_HOOK_PATH: &str = "/hooks";
 const DEFAULT_SESSION_KEY: &str = "hook:feedwake";
 const DEFAULT_GATEWAY_PORT: u16 = 18789;
-const DEFAULT_WAKE_ACTION_PATH: &str = "wake";
+const DEFAULT_FEEDWAKE_ACTION_PATH: &str = "feed-wake";
+const FEEDWAKE_MESSAGE_TEMPLATE: &str =
+    "Review these RSS alerts and explain why they matter:\n\n{{text}}";
 const GENERATED_TOKEN_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,8 +121,47 @@ pub fn patch_openclaw_config(raw_config: &str, hook_token_env: &str) -> Result<V
     hooks
         .entry("allowedSessionKeyPrefixes".to_string())
         .or_insert_with(|| json!(["hook:"]));
+    upsert_feedwake_mapping(hooks)?;
 
     Ok(config)
+}
+
+fn upsert_feedwake_mapping(hooks: &mut Map<String, Value>) -> Result<()> {
+    let mappings = hooks
+        .entry("mappings".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let mappings = mappings
+        .as_array_mut()
+        .context("OpenClaw hooks.mappings must be an array")?;
+    let feedwake_mapping = feedwake_mapping();
+
+    if let Some(existing) = mappings.iter_mut().find(|mapping| {
+        mapping.pointer("/match/path").and_then(Value::as_str) == Some(DEFAULT_FEEDWAKE_ACTION_PATH)
+    }) {
+        let existing = existing
+            .as_object_mut()
+            .context("OpenClaw feed-wake mapping must be an object")?;
+        let feedwake_mapping = feedwake_mapping
+            .as_object()
+            .context("FeedWake mapping must be an object")?;
+        for (key, value) in feedwake_mapping {
+            existing.insert(key.clone(), value.clone());
+        }
+        return Ok(());
+    }
+
+    mappings.push(feedwake_mapping);
+    Ok(())
+}
+
+fn feedwake_mapping() -> Value {
+    json!({
+        "match": { "path": DEFAULT_FEEDWAKE_ACTION_PATH },
+        "action": "agent",
+        "name": "FeedWake",
+        "wakeMode": "now",
+        "messageTemplate": FEEDWAKE_MESSAGE_TEMPLATE,
+    })
 }
 
 pub fn generate_hook_token() -> Result<String> {
@@ -521,7 +562,7 @@ fn resolve_openclaw_endpoint(
         wake_url: format!(
             "http://127.0.0.1:{port}/{}/{}",
             hook_path.trim_matches('/'),
-            DEFAULT_WAKE_ACTION_PATH
+            DEFAULT_FEEDWAKE_ACTION_PATH
         ),
         token_env,
     })
@@ -551,9 +592,10 @@ fn extract_env_var_reference(value: &str) -> Option<String> {
 
 fn default_feedwake_config_template() -> &'static str {
     r#"[openclaw]
-wake_url = "http://127.0.0.1:18789/hooks/wake"
+wake_url = "http://127.0.0.1:18789/hooks/feed-wake"
 token_env = "OPENCLAW_HOOK_TOKEN"
 mode = "now"
+max_articles_per_wake = 3
 
 [scan]
 timeout_seconds = 10

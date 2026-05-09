@@ -23,8 +23,9 @@ fn render_default_feedwake_config_uses_openclaw_port_path_and_token_env() {
     .expect("default config should render");
 
     assert!(config.contains("[openclaw]\n"));
-    assert!(config.contains("wake_url = \"http://127.0.0.1:19001/ingress/wake\""));
+    assert!(config.contains("wake_url = \"http://127.0.0.1:19001/ingress/feed-wake\""));
     assert!(config.contains("token_env = \"OPENCLAW_CUSTOM_HOOK_TOKEN\""));
+    assert!(config.contains("max_articles_per_wake = 3"));
     assert!(config.contains("[scan]\n"));
     assert!(config.contains("[[feeds]]\n"));
 }
@@ -34,7 +35,7 @@ fn render_default_feedwake_config_uses_safe_openclaw_defaults() {
     let config = feedwake::openclaw::render_default_feedwake_config("{}", DEFAULT_HOOK_TOKEN_ENV)
         .expect("default config should render");
 
-    assert!(config.contains("wake_url = \"http://127.0.0.1:18789/hooks/wake\""));
+    assert!(config.contains("wake_url = \"http://127.0.0.1:18789/hooks/feed-wake\""));
     assert!(config.contains("token_env = \"OPENCLAW_HOOK_TOKEN\""));
 }
 
@@ -69,6 +70,7 @@ fn reconcile_feedwake_config_updates_existing_openclaw_values_only() {
 wake_url = "http://127.0.0.1:18789/hooks/wake"
 token_env = "OPENCLAW_HOOK_TOKEN"
 mode = "later"
+max_articles_per_wake = 9
 
 [scan]
 timeout_seconds = 42
@@ -98,9 +100,10 @@ filter_profile = "media_high_precision"
     )
     .expect("existing config should update");
 
-    assert!(updated.contains("wake_url = \"http://127.0.0.1:19002/custom-hooks/wake\""));
+    assert!(updated.contains("wake_url = \"http://127.0.0.1:19002/custom-hooks/feed-wake\""));
     assert!(updated.contains("token_env = \"OPENCLAW_UPDATED_HOOK_TOKEN\""));
     assert!(updated.contains("mode = \"later\""));
+    assert!(updated.contains("max_articles_per_wake = 9"));
     assert!(updated.contains("timeout_seconds = 42"));
     assert!(updated.contains("name = \"Custom Feed\""));
 }
@@ -125,7 +128,14 @@ fn patch_openclaw_config_enables_hooks_with_env_token() {
             "path": "/hooks",
             "defaultSessionKey": "hook:feedwake",
             "allowRequestSessionKey": false,
-            "allowedSessionKeyPrefixes": ["hook:"]
+            "allowedSessionKeyPrefixes": ["hook:"],
+            "mappings": [{
+                "match": { "path": "feed-wake" },
+                "action": "agent",
+                "name": "FeedWake",
+                "wakeMode": "now",
+                "messageTemplate": "Review these RSS alerts and explain why they matter:\n\n{{text}}"
+            }]
         })
     );
     assert_eq!(
@@ -156,7 +166,16 @@ fn patch_openclaw_config_preserves_existing_hook_values() {
     assert_eq!(patched["hooks"]["path"], "/ingress");
     assert_eq!(
         patched["hooks"]["mappings"],
-        json!([{ "match": { "path": "gmail" }, "action": "agent" }])
+        json!([
+            { "match": { "path": "gmail" }, "action": "agent" },
+            {
+                "match": { "path": "feed-wake" },
+                "action": "agent",
+                "name": "FeedWake",
+                "wakeMode": "now",
+                "messageTemplate": "Review these RSS alerts and explain why they matter:\n\n{{text}}"
+            }
+        ])
     );
 }
 

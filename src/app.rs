@@ -81,13 +81,38 @@ pub fn run_scan_with_options(
         }
 
         for item in items {
+            if options.verbose {
+                log_stderr(format!(
+                    "feed item found: feed=\"{}\" title=\"{}\" url={}",
+                    feed.name,
+                    compact_log_value(&item.title),
+                    item.url
+                ));
+            }
             if state.has_seen_url(&item.url)? {
+                if options.verbose {
+                    log_stderr(format!(
+                        "feed item skipped: feed=\"{}\" title=\"{}\" reason=already_seen url={}",
+                        feed.name,
+                        compact_log_value(&item.title),
+                        item.url
+                    ));
+                }
                 continue;
             }
             summary.items_seen += 1;
             let decision = evaluate_item(&config, feed.filter_profile, &item);
             state.mark_seen_url(&item.url)?;
             if !decision.matched {
+                if options.verbose {
+                    log_stderr(format!(
+                        "feed item discarded: feed=\"{}\" title=\"{}\" reason={} url={}",
+                        feed.name,
+                        compact_log_value(&item.title),
+                        decision.reason,
+                        item.url
+                    ));
+                }
                 continue;
             }
             let event = WakeEvent {
@@ -96,8 +121,28 @@ pub fn run_scan_with_options(
                 matched_entity: decision.matched_entity,
             };
             if options.dry_run {
+                if options.verbose {
+                    log_stderr(format!(
+                        "feed item matched: feed=\"{}\" title=\"{}\" reason={} entity={} action=dry_run url={}",
+                        feed.name,
+                        compact_log_value(&event.item.title),
+                        event.matched_rule,
+                        event.matched_entity.as_deref().unwrap_or("-"),
+                        event.item.url
+                    ));
+                }
                 log_stdout(format!("dry-run match: {}", event.wake_text()));
             } else {
+                if options.verbose {
+                    log_stderr(format!(
+                        "feed item matched: feed=\"{}\" title=\"{}\" reason={} entity={} action=queued url={}",
+                        feed.name,
+                        compact_log_value(&event.item.title),
+                        event.matched_rule,
+                        event.matched_entity.as_deref().unwrap_or("-"),
+                        event.item.url
+                    ));
+                }
                 state.enqueue_event(&event)?;
             }
             summary.events_enqueued += 1;
@@ -261,4 +306,13 @@ fn timestamped(message: &str) -> String {
         Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         message
     )
+}
+
+fn compact_log_value(value: &str) -> String {
+    let single_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= 160 {
+        single_line
+    } else {
+        format!("{}...", single_line.chars().take(157).collect::<String>())
+    }
 }

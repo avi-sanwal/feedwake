@@ -20,6 +20,7 @@ const DEFAULT_FEEDWAKE_ACTION_PATH: &str = "feed-wake";
 const FEEDWAKE_MESSAGE_TEMPLATE: &str =
     "Review these RSS alerts and explain why they matter:\n\n{{text}}";
 const GENERATED_TOKEN_BYTES: usize = 32;
+const SYSTEM_LOG_DIR: &str = "/var/log/feedwake";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenClawInstallRequest {
@@ -568,12 +569,39 @@ fn resolve_feedwake_config_path() -> Result<PathBuf> {
 }
 
 fn resolve_feedwake_log_file() -> Result<PathBuf> {
+    resolve_feedwake_log_file_with_system_dir(Path::new(SYSTEM_LOG_DIR))
+}
+
+fn resolve_feedwake_log_file_with_system_dir(system_log_dir: &Path) -> Result<PathBuf> {
+    if writable_existing_dir(system_log_dir) {
+        return Ok(system_log_dir.join("feedwake.log"));
+    }
+
     if let Some(state_home) = env::var_os("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("feedwake/feedwake.log"));
     }
 
     let home = env::var_os("HOME").context("HOME is not set; pass --log-file")?;
     Ok(PathBuf::from(home).join(".local/state/feedwake/feedwake.log"))
+}
+
+fn writable_existing_dir(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+
+    let probe = path.join(format!(".feedwake-write-test-{}", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -781,4 +809,19 @@ fn validate_env_var_name(name: &str) -> Result<()> {
         bail!("hook token environment variable name must contain only A-Z, 0-9, or _");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_feedwake_log_file_with_system_dir;
+
+    #[test]
+    fn default_log_file_prefers_writable_system_log_directory() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+
+        let log_file = resolve_feedwake_log_file_with_system_dir(temp_dir.path())
+            .expect("log path should resolve");
+
+        assert_eq!(log_file, temp_dir.path().join("feedwake.log"));
+    }
 }

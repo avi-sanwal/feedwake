@@ -340,6 +340,7 @@ dependencies = [
  "feed-rs",
  "getrandom 0.2.17",
  "json5",
+ "percent-encoding",
  "regex",
  "rusqlite",
  "serde",
@@ -349,6 +350,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "ureq",
+ "url",
 ]
 
 [[package]]

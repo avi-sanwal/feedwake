@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use feed_rs::model::Entry;
+use percent_encoding::percent_decode_str;
 use std::io::Read;
 use std::time::Duration;
+use url::Url;
 
-use crate::config::{FeedConfig, ScanConfig};
+use crate::config::{FeedConfig, ScanConfig, SourceType};
 use crate::state::{FeedCache, StateStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,16 +16,20 @@ pub struct FeedItem {
     pub title: String,
     pub url: String,
     pub description: Option<String>,
+    pub subjects: Vec<String>,
+    pub document_filename: Option<String>,
     pub published_at: Option<DateTime<Utc>>,
 }
 
 impl FeedItem {
     pub fn searchable_text(&self) -> String {
         format!(
-            "{} {} {} {}",
+            "{} {} {} {} {} {}",
             self.title,
             self.description.as_deref().unwrap_or_default(),
+            self.subjects.join(" "),
             self.url,
+            self.document_filename.as_deref().unwrap_or_default(),
             self.source_name
         )
     }
@@ -46,11 +52,7 @@ pub fn fetch_feed(
         .build();
     let mut request = agent.get(&feed.url);
 
-    if let Some(user_agent) = &feed.user_agent {
-        request = request.set("User-Agent", user_agent);
-    } else {
-        request = request.set("User-Agent", "FeedWake/0.1");
-    }
+    request = request.set("User-Agent", user_agent_for_feed(feed));
 
     if scan.conditional_get {
         if let Some(cache) = cache {
@@ -153,6 +155,8 @@ fn entry_to_item(entry: &Entry, source_name: &str, source_url: &str) -> Option<F
         .map(|link| link.href.trim().to_string())
         .filter(|href| !href.is_empty())?;
 
+    let document_filename = document_filename(&url);
+
     Some(FeedItem {
         source_name: source_name.to_string(),
         source_url: source_url.to_string(),
@@ -162,6 +166,88 @@ fn entry_to_item(entry: &Entry, source_name: &str, source_url: &str) -> Option<F
             .summary
             .as_ref()
             .map(|summary| summary.content.clone()),
+        subjects: entry_subjects(entry),
+        document_filename,
         published_at: entry.published.or(entry.updated),
     })
+}
+
+fn user_agent_for_feed(feed: &FeedConfig) -> &str {
+    feed.user_agent
+        .as_deref()
+        .unwrap_or(match feed.source_type {
+            SourceType::Bse => "Mozilla/5.0 (compatible; FeedWake/0.1)",
+            _ => "FeedWake/0.1",
+        })
+}
+
+fn entry_subjects(entry: &Entry) -> Vec<String> {
+    entry
+        .categories
+        .iter()
+        .flat_map(|category| {
+            [
+                category.term.trim(),
+                category.label.as_deref().unwrap_or_default().trim(),
+            ]
+        })
+        .filter(|subject| !subject.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn document_filename(url: &str) -> Option<String> {
+    let path_segment = Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back().map(ToOwned::to_owned))
+        })
+        .or_else(|| url.rsplit('/').next().map(ToOwned::to_owned))?;
+
+    let trimmed = path_segment.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let decoded = percent_decode_str(trimmed).decode_utf8_lossy();
+    let filename = decoded.trim();
+    if filename.is_empty() {
+        None
+    } else {
+        Some(filename.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user_agent_for_feed;
+    use crate::config::{FeedConfig, FilterProfile, SourceType};
+
+    #[test]
+    fn bse_uses_browser_compatible_default_user_agent() {
+        let feed = FeedConfig {
+            name: "BSE Corporate Announcements".to_string(),
+            url: "https://www.bseindia.com/rss-feed.html".to_string(),
+            source_type: SourceType::Bse,
+            filter_profile: FilterProfile::ExchangeWatchlist,
+            user_agent: None,
+        };
+
+        assert!(user_agent_for_feed(&feed).contains("Mozilla/5.0"));
+    }
+
+    #[test]
+    fn configured_user_agent_overrides_bse_default() {
+        let feed = FeedConfig {
+            name: "BSE Corporate Announcements".to_string(),
+            url: "https://www.bseindia.com/rss-feed.html".to_string(),
+            source_type: SourceType::Bse,
+            filter_profile: FilterProfile::ExchangeWatchlist,
+            user_agent: Some("custom-agent".to_string()),
+        };
+
+        assert_eq!(user_agent_for_feed(&feed), "custom-agent");
+    }
 }

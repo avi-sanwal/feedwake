@@ -88,6 +88,8 @@ impl StateStore {
             "title": event.item.title,
             "url": event.item.url,
             "description": event.item.description,
+            "subjects": event.item.subjects,
+            "documentFilename": event.item.document_filename,
             "publishedAt": event.item.published_at.map(|value| value.to_rfc3339()),
             "matchedRule": event.matched_rule,
             "matchedEntity": event.matched_entity,
@@ -152,6 +154,21 @@ impl StateStore {
                 url: row.get(3)?,
                 description: parsed
                     .get("description")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                subjects: parsed
+                    .get("subjects")
+                    .and_then(|value| value.as_array())
+                    .map(|subjects| {
+                        subjects
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .map(ToOwned::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                document_filename: parsed
+                    .get("documentFilename")
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned),
                 published_at: parsed

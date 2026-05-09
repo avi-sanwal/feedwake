@@ -30,11 +30,13 @@ filter_profile = "exchange_watchlist"
 
 # Copy the current Corporate Announcements RSS URL from:
 # https://www.bseindia.com/rss-feed.html
+# FeedWake uses a browser-compatible default User-Agent for BSE when this is omitted.
 # [[feeds]]
 # name = "BSE Corporate Announcements"
 # url = "https://www.bseindia.com/<copy-from-rss-page>"
 # source_type = "bse"
 # filter_profile = "exchange_watchlist"
+# user_agent = "Mozilla/5.0"
 
 [[feeds]]
 name = "SEBI"

@@ -174,7 +174,6 @@ jobs:
             echo "Assets are uploaded by the release build jobs before publication."
             echo
             echo "- Linux x86_64: \`feedwake-${tag}-x86_64-linux-gnu.tar.gz\`"
-            echo "- macOS Intel: \`feedwake-${tag}-x86_64-macos.tar.gz\`"
             echo "- Windows x86_64: \`feedwake-${tag}-x86_64-windows-msvc.zip\`"
           } >> release-notes.md
 
@@ -200,11 +199,6 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: x86_64-linux-gnu
-            archive_ext: tar.gz
-            bin_name: feedwake
-          - os: macos-13
-            target: x86_64-apple-darwin
-            platform: x86_64-macos
             archive_ext: tar.gz
             bin_name: feedwake
           - os: windows-latest

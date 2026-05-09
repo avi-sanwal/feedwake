@@ -21,6 +21,7 @@ pub struct Config {
 pub struct OpenClawConfig {
     pub wake_url: String,
     pub token_env: String,
+    pub token_env_file: Option<String>,
     #[serde(default = "default_mode")]
     pub mode: String,
     #[serde(default = "default_max_articles_per_wake")]

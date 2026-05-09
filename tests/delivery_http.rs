@@ -2,9 +2,11 @@ use feedwake::config::OpenClawConfig;
 use feedwake::delivery::{OpenClawClient, WakeEvent};
 use feedwake::feed::FeedItem;
 use serde_json::Value;
+use std::fs;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use tempfile::TempDir;
 use tiny_http::{Header, Method, Response, Server};
 
 fn event(url: &str, title: &str) -> WakeEvent {
@@ -53,6 +55,7 @@ fn posts_batched_feedwake_event_with_bearer_token_and_article_details() {
         &OpenClawConfig {
             wake_url: format!("http://{}/hooks/feed-wake", address),
             token_env: "OPENCLAW_HOOK_TOKEN".to_string(),
+            token_env_file: None,
             mode: "now".to_string(),
             max_articles_per_wake: 3,
         },
@@ -108,6 +111,7 @@ fn non_success_status_is_delivery_error() {
         &OpenClawConfig {
             wake_url: format!("http://{}/hooks/feed-wake", address),
             token_env: "OPENCLAW_HOOK_TOKEN".to_string(),
+            token_env_file: None,
             mode: "now".to_string(),
             max_articles_per_wake: 3,
         },
@@ -121,4 +125,59 @@ fn non_success_status_is_delivery_error() {
             "Reliance Industries Limited"
         )])
         .is_err());
+}
+
+#[test]
+fn reads_bearer_token_from_openclaw_env_file_when_env_is_missing() {
+    std::env::remove_var("FEEDWAKE_TEST_HOOK_TOKEN_FILE");
+    let temp_dir = TempDir::new().expect("temp dir");
+    let env_file = temp_dir.path().join(".env");
+    fs::write(
+        &env_file,
+        "export FEEDWAKE_TEST_HOOK_TOKEN_FILE='file-token'\n",
+    )
+    .expect("write env file");
+
+    let server = Server::http("127.0.0.1:0").expect("server");
+    let address = server.server_addr().to_string();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let request = server.recv().expect("request");
+        let auth = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("Authorization"))
+            .map(|header| header.value.as_str().to_string());
+        request
+            .respond(Response::from_string("ok"))
+            .expect("response");
+        sender.send(auth).expect("send");
+    });
+
+    let client = OpenClawClient::from_config(
+        &OpenClawConfig {
+            wake_url: format!("http://{}/hooks/feed-wake", address),
+            token_env: "FEEDWAKE_TEST_HOOK_TOKEN_FILE".to_string(),
+            token_env_file: Some(env_file.to_string_lossy().to_string()),
+            mode: "now".to_string(),
+            max_articles_per_wake: 3,
+        },
+        Duration::from_secs(5),
+    )
+    .expect("client");
+
+    client
+        .post(&event(
+            "https://example.com/reliance.pdf",
+            "Reliance Industries Limited",
+        ))
+        .expect("post");
+
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("posted")
+            .as_deref(),
+        Some("Bearer file-token")
+    );
 }

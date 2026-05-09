@@ -1,6 +1,8 @@
 use crate::feed::FeedItem;
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
+use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use crate::config::OpenClawConfig;
@@ -48,8 +50,7 @@ impl OpenClawClient {
                 "openclaw.max_articles_per_wake must be greater than 0"
             ));
         }
-        let token = std::env::var(&config.token_env)
-            .with_context(|| format!("{} is not set", config.token_env))?;
+        let token = resolve_hook_token(config)?;
         Ok(Self {
             wake_url: config.wake_url.clone(),
             token,
@@ -120,4 +121,71 @@ fn batch_wake_text(events: &[WakeEvent]) -> String {
         }
     }
     text
+}
+
+fn resolve_hook_token(config: &OpenClawConfig) -> Result<String> {
+    if let Ok(token) = std::env::var(&config.token_env) {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    if let Some(token_env_file) = &config.token_env_file {
+        let token = read_token_from_env_file(Path::new(token_env_file), &config.token_env)?;
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    Err(anyhow!(
+        "{} is not set and token_env_file did not provide it",
+        config.token_env
+    ))
+}
+
+fn read_token_from_env_file(path: &Path, token_env: &str) -> Result<String> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read OpenClaw token env file {}", path.display()))?;
+    for line in contents.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = env_assignment(line) else {
+            continue;
+        };
+        if name == token_env {
+            return parse_env_value(value)
+                .with_context(|| format!("failed to parse {token_env} in {}", path.display()));
+        }
+    }
+
+    Err(anyhow!(
+        "{} was not found in OpenClaw token env file {}",
+        token_env,
+        path.display()
+    ))
+}
+
+fn env_assignment(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let (name, value) = line.split_once('=')?;
+    Some((name.trim(), value.trim()))
+}
+
+fn parse_env_value(value: &str) -> Result<String> {
+    let value = value.trim();
+    if let Some(value) = value.strip_prefix('\'') {
+        let value = value
+            .strip_suffix('\'')
+            .context("single-quoted env value is missing closing quote")?;
+        return Ok(value.replace("'\\''", "'"));
+    }
+    if let Some(value) = value.strip_prefix('"') {
+        let value = value
+            .strip_suffix('"')
+            .context("double-quoted env value is missing closing quote")?;
+        return Ok(value.replace("\\\"", "\""));
+    }
+    Ok(value.to_string())
 }

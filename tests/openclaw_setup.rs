@@ -26,6 +26,7 @@ fn render_default_feedwake_config_uses_openclaw_port_path_and_token_env() {
     assert!(config.contains("wake_url = \"http://127.0.0.1:19001/ingress/feed-wake\""));
     assert!(config.contains("token_env = \"OPENCLAW_CUSTOM_HOOK_TOKEN\""));
     assert!(config.contains("max_articles_per_wake = 3"));
+    assert!(!config.contains("token_env_file"));
     assert!(config.contains("[scan]\n"));
     assert!(config.contains("[[feeds]]\n"));
 }
@@ -85,6 +86,7 @@ source_type = "media"
 filter_profile = "media_high_precision"
 "#;
 
+    let token_env_file = PathBuf::from("/tmp/openclaw/.env");
     let updated = reconcile_feedwake_config(
         existing,
         r#"
@@ -97,11 +99,13 @@ filter_profile = "media_high_precision"
         }
         "#,
         DEFAULT_HOOK_TOKEN_ENV,
+        Some(token_env_file.as_path()),
     )
     .expect("existing config should update");
 
     assert!(updated.contains("wake_url = \"http://127.0.0.1:19002/custom-hooks/feed-wake\""));
     assert!(updated.contains("token_env = \"OPENCLAW_UPDATED_HOOK_TOKEN\""));
+    assert!(updated.contains("token_env_file = \"/tmp/openclaw/.env\""));
     assert!(updated.contains("mode = \"later\""));
     assert!(updated.contains("max_articles_per_wake = 9"));
     assert!(updated.contains("timeout_seconds = 42"));
@@ -198,22 +202,20 @@ fn render_managed_crontab_adds_feedwake_block() {
 
     assert!(crontab.contains("MAILTO=test@example.com"));
     assert!(crontab.contains("# feedwake openclaw integration start"));
-    assert!(crontab.contains("*/5 * * * * /bin/sh -c "));
-    assert!(crontab.contains("/Users/test/.openclaw/.env"));
+    assert!(crontab.contains("*/5 * * * * '/usr/local/bin/feedwake' --verbose scan --config"));
+    assert!(!crontab.contains("/Users/test/.openclaw/.env"));
     assert!(crontab.contains("/usr/local/bin/feedwake"));
     assert!(crontab.contains("--verbose scan --config"));
-    assert!(crontab.contains("set -a"));
-    assert!(crontab.contains("set +a"));
-    assert!(crontab.contains("mkdir -p"));
+    assert!(crontab.contains("--log-file"));
+    assert!(crontab.contains("--log-max-bytes 1048576"));
+    assert!(crontab.contains("--log-rotate-count 5"));
     assert!(crontab.contains("/Users/test/.local/state/feedwake"));
-    assert!(crontab.contains(">>"));
-    assert!(crontab.contains("2>&1"));
-    assert!(crontab.contains("[ -f"));
-    assert!(crontab.contains("wc -c <"));
-    assert!(crontab.contains("-ge 1048576"));
-    assert!(crontab.contains("mv -f"));
-    assert!(crontab.contains(".4"));
-    assert!(crontab.contains(".5"));
+    assert!(!crontab.contains("/bin/sh -c"));
+    assert!(!crontab.contains("set -a"));
+    assert!(!crontab.contains("mkdir -p"));
+    assert!(!crontab.contains(">>"));
+    assert!(!crontab.contains("2>&1"));
+    assert!(crontab.lines().all(|line| line.len() < 500));
 }
 
 #[test]
@@ -271,7 +273,7 @@ SHELL=/bin/sh
     let crontab = render_managed_crontab(existing, &options).expect("crontab should render");
 
     assert!(!crontab.contains("old command"));
-    assert!(crontab.contains("*/15 * * * * /bin/sh -c "));
+    assert!(crontab.contains("*/15 * * * * '/usr/local/bin/feedwake' --verbose scan"));
     assert!(crontab.contains("SHELL=/bin/sh"));
     assert!(crontab.contains("0 9 * * * another-command"));
 }

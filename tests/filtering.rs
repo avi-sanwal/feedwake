@@ -10,6 +10,7 @@ fn test_config() -> Config {
         openclaw: OpenClawConfig {
             wake_url: "http://127.0.0.1:18789/hooks/feed-wake".to_string(),
             token_env: "OPENCLAW_HOOK_TOKEN".to_string(),
+            token_env_file: None,
             mode: "now".to_string(),
             max_articles_per_wake: 3,
         },

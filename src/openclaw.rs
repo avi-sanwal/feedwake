@@ -226,6 +226,7 @@ pub fn render_default_feedwake_config(
         default_feedwake_config_template(),
         raw_openclaw_config,
         hook_token_env,
+        None,
     )
 }
 
@@ -233,6 +234,7 @@ pub fn reconcile_feedwake_config(
     raw_feedwake_config: &str,
     raw_openclaw_config: &str,
     hook_token_env: &str,
+    token_env_file: Option<&Path>,
 ) -> Result<String> {
     let endpoint = resolve_openclaw_endpoint(raw_openclaw_config, hook_token_env)?;
     let mut document = raw_feedwake_config
@@ -241,6 +243,10 @@ pub fn reconcile_feedwake_config(
 
     document["openclaw"]["wake_url"] = value(endpoint.wake_url);
     document["openclaw"]["token_env"] = value(endpoint.token_env);
+    if let Some(token_env_file) = token_env_file {
+        document["openclaw"]["token_env_file"] =
+            value(token_env_file.to_string_lossy().to_string());
+    }
     if !document["openclaw"]["mode"].is_value() {
         document["openclaw"]["mode"] = value("now");
     }
@@ -456,6 +462,7 @@ fn write_feedwake_config(
         &raw_feedwake_config,
         raw_openclaw_config,
         &options.hook_token_env,
+        Some(&options.openclaw_config_dir.join(".env")),
     )?;
     if let Some(parent) = options.feedwake_config_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -721,50 +728,15 @@ exclude_keywords = [
 }
 
 fn cron_entry(options: &OpenClawInstallOptions) -> String {
-    let env_file = options.openclaw_config_dir.join(".env");
-    let log_dir = options
-        .log_file
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let rotation_script = render_log_rotation_script(
-        &options.log_file,
-        options.log_max_bytes,
-        options.log_rotate_count,
-    );
-    let script = format!(
-        "mkdir -p {log_dir}; {rotation_script}; if [ -f {env_file} ]; then set -a; . {env_file}; set +a; fi; exec {bin} --verbose scan --config {config} >> {log_file} 2>&1",
-        log_dir = shell_quote_path(&log_dir),
-        rotation_script = rotation_script,
-        env_file = shell_quote_path(&env_file),
+    escape_cron_percent(&format!(
+        "*/{frequency} * * * * {bin} --verbose scan --config {config} --log-file {log_file} --log-max-bytes {log_max_bytes} --log-rotate-count {log_rotate_count}",
+        frequency = options.frequency_minutes,
         bin = shell_quote_path(&options.feedwake_bin),
         config = shell_quote_path(&options.feedwake_config_path),
         log_file = shell_quote_path(&options.log_file),
-    );
-    escape_cron_percent(&format!(
-        "*/{} * * * * /bin/sh -c {}",
-        options.frequency_minutes,
-        shell_quote(&script)
+        log_max_bytes = options.log_max_bytes,
+        log_rotate_count = options.log_rotate_count,
     ))
-}
-
-fn render_log_rotation_script(log_file: &Path, max_bytes: u64, rotate_count: u8) -> String {
-    let log_file = shell_quote_path(log_file);
-    let mut script =
-        format!("if [ -f {log_file} ] && [ $(wc -c < {log_file}) -ge {max_bytes} ]; then");
-    for index in (1..rotate_count).rev() {
-        script.push_str(&format!(
-            " if [ -f {log_file}.{index} ]; then mv -f {log_file}.{index} {log_file}.{}; fi;",
-            index + 1
-        ));
-    }
-    if rotate_count > 0 {
-        script.push_str(&format!(" mv -f {log_file} {log_file}.1;"));
-    } else {
-        script.push_str(&format!(" : > {log_file};"));
-    }
-    script.push_str(" fi");
-    script
 }
 
 fn shell_quote_path(path: &Path) -> String {

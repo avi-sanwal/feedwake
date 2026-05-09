@@ -20,6 +20,12 @@ enum Commands {
         config: Option<PathBuf>,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+        #[arg(long, default_value_t = 1_048_576)]
+        log_max_bytes: u64,
+        #[arg(long, default_value_t = 5)]
+        log_rotate_count: u8,
     },
     Openclaw {
         #[command(subcommand)]
@@ -49,10 +55,26 @@ enum OpenClawCommands {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(error) = run() {
+        feedwake::app::log_stderr(format!("Error: {error:#}"));
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Scan { config, dry_run } => {
+        Commands::Scan {
+            config,
+            dry_run,
+            log_file,
+            log_max_bytes,
+            log_rotate_count,
+        } => {
+            if let Some(log_file) = log_file.as_deref() {
+                feedwake::app::configure_file_logging(log_file, log_max_bytes, log_rotate_count)?;
+            }
             let summary = feedwake::app::run_scan_with_options(
                 config.as_deref(),
                 feedwake::app::ScanOptions {

@@ -11,6 +11,7 @@ fn test_config() -> Config {
             wake_url: "http://127.0.0.1:18789/hooks/feed-wake".to_string(),
             token_env: "OPENCLAW_HOOK_TOKEN".to_string(),
             mode: "now".to_string(),
+            max_articles_per_wake: 3,
         },
         scan: ScanConfig {
             timeout_seconds: 10,

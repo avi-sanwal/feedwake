@@ -122,7 +122,13 @@ fn deliver_pending(
     summary: &mut ScanSummary,
     verbose: bool,
 ) -> Result<()> {
-    let pending = state.pending_events()?;
+    if openclaw.max_articles_per_wake == 0 {
+        return Err(anyhow!(
+            "openclaw.max_articles_per_wake must be greater than 0"
+        ));
+    }
+
+    let pending = state.pending_events_limit(openclaw.max_articles_per_wake)?;
     if pending.is_empty() {
         if verbose {
             eprintln!("delivery queue empty");
@@ -134,17 +140,21 @@ fn deliver_pending(
     }
 
     let client = OpenClawClient::from_config(openclaw, Duration::from_secs(timeout_seconds))?;
-    for (id, event) in pending {
-        match client.post(&event) {
-            Ok(()) => {
+    let ids: Vec<_> = pending.iter().map(|(id, _)| *id).collect();
+    let events: Vec<_> = pending.iter().map(|(_, event)| event.clone()).collect();
+    match client.post_batch(&events) {
+        Ok(()) => {
+            for id in ids {
                 state.mark_delivered(id)?;
                 summary.events_delivered += 1;
             }
-            Err(error) => {
-                summary.delivery_errors += 1;
+        }
+        Err(error) => {
+            summary.delivery_errors += events.len();
+            for id in ids {
                 state.mark_delivery_failed(id, &error.to_string())?;
-                eprintln!("delivery error for {}: {}", event.item.url, error);
             }
+            eprintln!("delivery error for FeedWake batch: {}", error);
         }
     }
     Ok(())

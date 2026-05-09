@@ -52,3 +52,40 @@ fn outbox_marks_delivered_only_after_success() {
         DeliveryStatus::Delivered
     );
 }
+
+#[test]
+fn pending_events_limit_returns_oldest_events_without_marking_excess_delivered() {
+    let db = NamedTempFile::new().expect("temp db");
+    let store = StateStore::open(db.path()).expect("open state");
+    let first = store
+        .enqueue_event(&WakeEvent {
+            item: item("https://example.com/a"),
+            matched_rule: "exchange_watchlist".to_string(),
+            matched_entity: Some("RELIANCE".to_string()),
+        })
+        .expect("enqueue first");
+    let second = store
+        .enqueue_event(&WakeEvent {
+            item: item("https://example.com/b"),
+            matched_rule: "exchange_watchlist".to_string(),
+            matched_entity: Some("RELIANCE".to_string()),
+        })
+        .expect("enqueue second");
+    let third = store
+        .enqueue_event(&WakeEvent {
+            item: item("https://example.com/c"),
+            matched_rule: "exchange_watchlist".to_string(),
+            matched_entity: Some("RELIANCE".to_string()),
+        })
+        .expect("enqueue third");
+
+    let pending = store.pending_events_limit(2).expect("pending limit");
+
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].0, first);
+    assert_eq!(pending[1].0, second);
+    assert_eq!(
+        store.event_status(third).expect("third status"),
+        DeliveryStatus::Pending
+    );
+}

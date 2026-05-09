@@ -45,6 +45,7 @@ feedwake scan --config /etc/feedwake.toml
 
 The installer discovers `~/.openclaw/openclaw.json`, or the parent directory of
 `OPENCLAW_CONFIG_PATH` when that variable is set. It enables OpenClaw hooks,
+adds or updates a `/hooks/feed-wake` mapped hook for FeedWake RSS batches,
 updates or creates the FeedWake config at `$HOME/.config/feedwake/config.toml`,
 and reconciles FeedWake's OpenClaw URL and token environment variable from
 OpenClaw's `gateway.port`, `hooks.path`, and `hooks.token`. If no hook token is
@@ -69,8 +70,11 @@ If `--config` is omitted, FeedWake searches:
 2. `$HOME/.config/feedwake/config.toml`
 3. `$HOME/.feedwake.toml`
 
-The default OpenClaw route is local loopback delivery to `/hooks/wake`.
+The default OpenClaw route is local loopback delivery to `/hooks/feed-wake`.
 Keep the hook token in the environment using the configured `token_env`.
+FeedWake sends one webhook call per scan with up to `openclaw.max_articles_per_wake`
+matched articles, defaulting to 3. Extra pending articles remain in SQLite and
+are delivered by a later cron run.
 
 ## Cron
 
@@ -94,14 +98,16 @@ FeedWake has four main pieces:
   global rule set.
 - **SQLite state**: tracks seen URLs, feed cache headers, and pending delivery
   events.
-- **OpenClaw delivery**: posts compact local wake events to
-  `http://127.0.0.1:18789/hooks/wake` using a bearer token from the
-  environment.
+- **OpenClaw delivery**: posts compact local RSS batches to
+  `http://127.0.0.1:18789/hooks/feed-wake` using a bearer token from the
+  environment. Each payload includes a readable `text` summary and structured
+  article details including title, URL, source feed URL, description, matched
+  rule, matched entity, and publication time when present.
 
 The scan flow is:
 
 ```text
-cron -> feedwake scan -> fetch feeds -> filter locally -> SQLite outbox -> /hooks/wake
+cron -> feedwake scan -> fetch feeds -> filter locally -> SQLite outbox -> /hooks/feed-wake
 ```
 
 ## Filtering Profiles

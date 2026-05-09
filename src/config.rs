@@ -23,6 +23,8 @@ pub struct OpenClawConfig {
     pub token_env: String,
     #[serde(default = "default_mode")]
     pub mode: String,
+    #[serde(default = "default_max_articles_per_wake")]
+    pub max_articles_per_wake: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +104,10 @@ impl Default for MediaFilters {
 
 fn default_mode() -> String {
     "now".to_string()
+}
+
+fn default_max_articles_per_wake() -> usize {
+    3
 }
 
 fn default_timeout_seconds() -> u64 {

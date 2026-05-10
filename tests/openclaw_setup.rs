@@ -1,7 +1,8 @@
 use feedwake::openclaw::{
-    generate_hook_token, patch_openclaw_config, reconcile_feedwake_config,
-    reconcile_openclaw_env_file, render_managed_crontab, resolve_install_options,
-    OpenClawInstallOptions, OpenClawInstallRequest, DEFAULT_HOOK_TOKEN_ENV,
+    generate_hook_token, patch_openclaw_config, patch_openclaw_config_with_message_template,
+    reconcile_feedwake_config, reconcile_openclaw_env_file, render_managed_crontab,
+    resolve_install_options, OpenClawInstallOptions, OpenClawInstallRequest,
+    DEFAULT_HOOK_TOKEN_ENV,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -131,8 +132,6 @@ fn patch_openclaw_config_enables_hooks_with_env_token() {
             "token": "${OPENCLAW_HOOK_TOKEN}",
             "path": "/hooks",
             "defaultSessionKey": "hook:feedwake",
-            "allowRequestSessionKey": true,
-            "allowedSessionKeyPrefixes": ["hook:"],
             "mappings": [{
                 "match": { "path": "feed-wake" },
                 "action": "agent",
@@ -168,7 +167,7 @@ fn patch_openclaw_config_preserves_existing_hook_values() {
     assert_eq!(patched["hooks"]["enabled"], true);
     assert_eq!(patched["hooks"]["token"], "${OPENCLAW_EXISTING_HOOK_TOKEN}");
     assert_eq!(patched["hooks"]["path"], "/ingress");
-    assert_eq!(patched["hooks"]["allowRequestSessionKey"], true);
+    assert!(patched["hooks"]["allowRequestSessionKey"].is_null());
     assert_eq!(
         patched["hooks"]["mappings"],
         json!([
@@ -185,6 +184,94 @@ fn patch_openclaw_config_preserves_existing_hook_values() {
 }
 
 #[test]
+fn patch_openclaw_config_preserves_existing_request_session_key_setting() {
+    let patched = patch_openclaw_config(
+        r#"
+        {
+          hooks: {
+            allowRequestSessionKey: true,
+            allowedSessionKeyPrefixes: ["hook:", "hook:gmail:"],
+            mappings: [{ match: { path: "gmail" }, action: "agent" }],
+          },
+        }
+        "#,
+        DEFAULT_HOOK_TOKEN_ENV,
+    )
+    .expect("config should patch");
+
+    assert_eq!(patched["hooks"]["allowRequestSessionKey"], true);
+    assert_eq!(
+        patched["hooks"]["allowedSessionKeyPrefixes"],
+        json!(["hook:", "hook:gmail:"])
+    );
+}
+
+#[test]
+fn patch_openclaw_config_updates_feedwake_mapping_with_configured_message_template() {
+    let patched = patch_openclaw_config(
+        r#"
+        {
+          hooks: {
+            feedWakeMessageTemplate: "Summarize the market impact and trading reaction:\n\n{{text}}",
+            mappings: [{
+              match: { path: "feed-wake" },
+              action: "agent",
+              name: "FeedWake",
+              wakeMode: "now",
+              messageTemplate: "stale wording"
+            }],
+          },
+        }
+        "#,
+        DEFAULT_HOOK_TOKEN_ENV,
+    )
+    .expect("config should patch");
+
+    assert_eq!(
+        patched["hooks"]["mappings"],
+        json!([{
+            "match": { "path": "feed-wake" },
+            "action": "agent",
+            "name": "FeedWake",
+            "wakeMode": "now",
+            "messageTemplate": "Summarize the market impact and trading reaction:\n\n{{text}}"
+        }])
+    );
+}
+
+#[test]
+fn patch_openclaw_config_stores_and_uses_requested_message_template() {
+    let patched = patch_openclaw_config_with_message_template(
+        r#"
+        {
+          hooks: {
+            feedWakeMessageTemplate: "stale wording",
+            mappings: [{
+              match: { path: "feed-wake" },
+              action: "agent",
+              name: "FeedWake",
+              wakeMode: "now",
+              messageTemplate: "stale wording"
+            }],
+          },
+        }
+        "#,
+        DEFAULT_HOOK_TOKEN_ENV,
+        Some("Act as a trading news watcher and flag market impact:\n\n{{text}}"),
+    )
+    .expect("config should patch");
+
+    assert_eq!(
+        patched["hooks"]["feedWakeMessageTemplate"],
+        "Act as a trading news watcher and flag market impact:\n\n{{text}}"
+    );
+    assert_eq!(
+        patched["hooks"]["mappings"][0]["messageTemplate"],
+        "Act as a trading news watcher and flag market impact:\n\n{{text}}"
+    );
+}
+
+#[test]
 fn render_managed_crontab_adds_feedwake_block() {
     let options = OpenClawInstallOptions {
         openclaw_config_dir: PathBuf::from("/Users/test/.openclaw"),
@@ -196,6 +283,7 @@ fn render_managed_crontab_adds_feedwake_block() {
         log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
         log_max_bytes: 1_048_576,
         log_rotate_count: 5,
+        message_template: None,
     };
 
     let crontab = render_managed_crontab("MAILTO=test@example.com\n", &options)
@@ -230,6 +318,7 @@ fn resolve_install_options_uses_explicit_openclaw_config_directory() {
         log_file: Some(PathBuf::from("/tmp/feedwake.log")),
         log_max_bytes: 4096,
         log_rotate_count: 2,
+        message_template: Some("Act on trading news:\n\n{{text}}".to_string()),
     })
     .expect("options should resolve");
 
@@ -247,6 +336,10 @@ fn resolve_install_options_uses_explicit_openclaw_config_directory() {
     assert_eq!(options.log_file, PathBuf::from("/tmp/feedwake.log"));
     assert_eq!(options.log_max_bytes, 4096);
     assert_eq!(options.log_rotate_count, 2);
+    assert_eq!(
+        options.message_template.as_deref(),
+        Some("Act on trading news:\n\n{{text}}")
+    );
 }
 
 #[test]
@@ -261,6 +354,7 @@ fn render_managed_crontab_replaces_existing_feedwake_block() {
         log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
         log_max_bytes: 1_048_576,
         log_rotate_count: 5,
+        message_template: None,
     };
 
     let existing = "\
@@ -291,6 +385,7 @@ fn render_managed_crontab_rejects_invalid_frequency() {
         log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
         log_max_bytes: 1_048_576,
         log_rotate_count: 5,
+        message_template: None,
     };
 
     assert!(render_managed_crontab("", &options).is_err());
@@ -308,6 +403,7 @@ fn resolve_install_options_uses_default_feedwake_log_path() {
         log_file: None,
         log_max_bytes: 1_048_576,
         log_rotate_count: 5,
+        message_template: None,
     })
     .expect("options should resolve");
 
@@ -329,6 +425,7 @@ fn render_managed_crontab_rejects_invalid_log_rotation_settings() {
         log_file: PathBuf::from("/Users/test/.local/state/feedwake/feedwake.log"),
         log_max_bytes: 0,
         log_rotate_count: 5,
+        message_template: None,
     };
 
     assert!(render_managed_crontab("", &options).is_err());

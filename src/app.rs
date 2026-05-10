@@ -193,15 +193,10 @@ fn deliver_pending(
     let client = OpenClawClient::from_config(openclaw, Duration::from_secs(timeout_seconds))?;
     let ids: Vec<_> = pending.iter().map(|(id, _)| *id).collect();
     let events: Vec<_> = pending.iter().map(|(_, event)| event.clone()).collect();
-    let session_key = batch_session_key(&ids);
     if verbose {
-        log_stderr(format!(
-            "delivering pending events: {} session_key={}",
-            pending.len(),
-            session_key
-        ));
+        log_stderr(format!("delivering pending events: {}", pending.len()));
     }
-    match client.post_batch_with_session_key(&events, Some(&session_key)) {
+    match client.post_batch(&events) {
         Ok(()) => {
             for id in ids {
                 state.mark_delivered(id)?;
@@ -217,15 +212,6 @@ fn deliver_pending(
         }
     }
     Ok(())
-}
-
-fn batch_session_key(ids: &[i64]) -> String {
-    let first_id = ids.first().copied().unwrap_or_default();
-    let last_id = ids.last().copied().unwrap_or(first_id);
-    format!(
-        "hook:feedwake:{}-{first_id}-{last_id}",
-        Utc::now().timestamp_millis()
-    )
 }
 
 pub fn log_stdout(message: impl AsRef<str>) {

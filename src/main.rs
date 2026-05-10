@@ -52,6 +52,8 @@ enum OpenClawCommands {
         log_max_bytes: u64,
         #[arg(long, default_value_t = 5)]
         log_rotate_count: u8,
+        #[arg(long)]
+        message_template: Option<String>,
     },
 }
 
@@ -100,6 +102,7 @@ fn run() -> Result<()> {
                 log_file,
                 log_max_bytes,
                 log_rotate_count,
+                message_template,
             } => {
                 let summary = feedwake::openclaw::install_openclaw(
                     feedwake::openclaw::OpenClawInstallRequest {
@@ -111,6 +114,7 @@ fn run() -> Result<()> {
                         log_file,
                         log_max_bytes,
                         log_rotate_count,
+                        message_template,
                     },
                 )?;
                 feedwake::app::log_stdout(format!(

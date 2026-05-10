@@ -55,6 +55,25 @@ installs a managed current-user crontab block that runs every 5 minutes by
 default. Pass `--openclaw-config-dir`, `--frequency-minutes`, `--config`, or
 `--feedwake-bin` to override those defaults.
 
+The default OpenClaw prompt is:
+
+```text
+Review these RSS alerts and explain why they matter:
+
+{{text}}
+```
+
+Use `--message-template` to install different wording, for example:
+
+```bash
+feedwake openclaw install --message-template $'Act as a trading news watcher. Explain market impact, likely trading reaction, and what to monitor next:\n\n{{text}}'
+```
+
+The installer stores that value as `hooks.feedWakeMessageTemplate` in
+OpenClaw config and updates the `/hooks/feed-wake` mapping `messageTemplate`.
+You can also edit `hooks.feedWakeMessageTemplate` directly and rerun
+`feedwake openclaw install`.
+
 The managed crontab entry runs `feedwake --verbose scan` with FeedWake-owned
 file logging. FeedWake writes timestamped output to `/var/log/feedwake/feedwake.log`
 when that directory already exists and is writable by the installing user,
@@ -81,9 +100,9 @@ The default OpenClaw route is local loopback delivery to `/hooks/feed-wake`.
 Keep the hook token in the environment using the configured `token_env`.
 FeedWake sends one webhook call per scan with up to `openclaw.max_articles_per_wake`
 matched articles, defaulting to 3. Extra pending articles remain in SQLite and
-are delivered by a later cron run. Each webhook batch includes a unique
-`sessionKey` with the `hook:feedwake:` prefix so a stalled OpenClaw run does not
-block later FeedWake batches in the same long-lived hook session.
+are delivered by a later cron run. FeedWake does not send a request-level
+`sessionKey`; the OpenClaw mapping uses the static `hook:feedwake` session and
+`wakeMode: "now"` to trigger a heartbeat for new batches.
 
 ## Cron
 

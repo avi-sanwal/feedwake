@@ -19,6 +19,7 @@ const DEFAULT_GATEWAY_PORT: u16 = 18789;
 const DEFAULT_FEEDWAKE_ACTION_PATH: &str = "feed-wake";
 const FEEDWAKE_MESSAGE_TEMPLATE: &str =
     "Review these RSS alerts and explain why they matter:\n\n{{text}}";
+const FEEDWAKE_MESSAGE_TEMPLATE_CONFIG_KEY: &str = "feedWakeMessageTemplate";
 const GENERATED_TOKEN_BYTES: usize = 32;
 const SYSTEM_LOG_DIR: &str = "/var/log/feedwake";
 
@@ -32,6 +33,7 @@ pub struct OpenClawInstallRequest {
     pub log_file: Option<PathBuf>,
     pub log_max_bytes: u64,
     pub log_rotate_count: u8,
+    pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub struct OpenClawInstallOptions {
     pub log_file: PathBuf,
     pub log_max_bytes: u64,
     pub log_rotate_count: u8,
+    pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +78,9 @@ pub fn resolve_install_options(request: OpenClawInstallRequest) -> Result<OpenCl
     validate_frequency(request.frequency_minutes)?;
     validate_env_var_name(&request.hook_token_env)?;
     validate_log_rotation(request.log_max_bytes, request.log_rotate_count)?;
+    if let Some(template) = request.message_template.as_deref() {
+        validate_feedwake_message_template(template)?;
+    }
 
     let (openclaw_config_dir, openclaw_config_path) =
         resolve_openclaw_config_location(request.openclaw_config_dir.as_deref())?;
@@ -101,11 +107,23 @@ pub fn resolve_install_options(request: OpenClawInstallRequest) -> Result<OpenCl
         log_file,
         log_max_bytes: request.log_max_bytes,
         log_rotate_count: request.log_rotate_count,
+        message_template: request.message_template,
     })
 }
 
 pub fn patch_openclaw_config(raw_config: &str, hook_token_env: &str) -> Result<Value> {
+    patch_openclaw_config_with_message_template(raw_config, hook_token_env, None)
+}
+
+pub fn patch_openclaw_config_with_message_template(
+    raw_config: &str,
+    hook_token_env: &str,
+    message_template: Option<&str>,
+) -> Result<Value> {
     validate_env_var_name(hook_token_env)?;
+    if let Some(template) = message_template {
+        validate_feedwake_message_template(template)?;
+    }
 
     let mut config: Value = if raw_config.trim().is_empty() {
         json!({})
@@ -132,23 +150,44 @@ pub fn patch_openclaw_config(raw_config: &str, hook_token_env: &str) -> Result<V
     hooks
         .entry("defaultSessionKey".to_string())
         .or_insert_with(|| Value::String(DEFAULT_SESSION_KEY.to_string()));
-    hooks.insert("allowRequestSessionKey".to_string(), Value::Bool(true));
-    hooks
-        .entry("allowedSessionKeyPrefixes".to_string())
-        .or_insert_with(|| json!(["hook:"]));
-    upsert_feedwake_mapping(hooks)?;
+    if let Some(template) = message_template {
+        hooks.insert(
+            FEEDWAKE_MESSAGE_TEMPLATE_CONFIG_KEY.to_string(),
+            Value::String(template.to_string()),
+        );
+    }
+    let message_template = feedwake_message_template(hooks)?;
+    upsert_feedwake_mapping(hooks, &message_template)?;
 
     Ok(config)
 }
 
-fn upsert_feedwake_mapping(hooks: &mut Map<String, Value>) -> Result<()> {
+fn feedwake_message_template(hooks: &Map<String, Value>) -> Result<String> {
+    match hooks.get(FEEDWAKE_MESSAGE_TEMPLATE_CONFIG_KEY) {
+        Some(Value::String(template)) => {
+            validate_feedwake_message_template(template)?;
+            Ok(template.to_string())
+        }
+        Some(_) => bail!("OpenClaw hooks.feedWakeMessageTemplate must be a string"),
+        None => Ok(FEEDWAKE_MESSAGE_TEMPLATE.to_string()),
+    }
+}
+
+fn validate_feedwake_message_template(template: &str) -> Result<()> {
+    if template.trim().is_empty() {
+        bail!("OpenClaw hooks.feedWakeMessageTemplate cannot be empty");
+    }
+    Ok(())
+}
+
+fn upsert_feedwake_mapping(hooks: &mut Map<String, Value>, message_template: &str) -> Result<()> {
     let mappings = hooks
         .entry("mappings".to_string())
         .or_insert_with(|| Value::Array(Vec::new()));
     let mappings = mappings
         .as_array_mut()
         .context("OpenClaw hooks.mappings must be an array")?;
-    let feedwake_mapping = feedwake_mapping();
+    let feedwake_mapping = feedwake_mapping(message_template);
 
     if let Some(existing) = mappings.iter_mut().find(|mapping| {
         mapping.pointer("/match/path").and_then(Value::as_str) == Some(DEFAULT_FEEDWAKE_ACTION_PATH)
@@ -169,13 +208,13 @@ fn upsert_feedwake_mapping(hooks: &mut Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-fn feedwake_mapping() -> Value {
+fn feedwake_mapping(message_template: &str) -> Value {
     json!({
         "match": { "path": DEFAULT_FEEDWAKE_ACTION_PATH },
         "action": "agent",
         "name": "FeedWake",
         "wakeMode": "now",
-        "messageTemplate": FEEDWAKE_MESSAGE_TEMPLATE,
+        "messageTemplate": message_template,
     })
 }
 
@@ -322,7 +361,11 @@ fn write_openclaw_config(options: &OpenClawInstallOptions) -> Result<String> {
             })
         }
     };
-    let mut patched = patch_openclaw_config(&raw_config, &options.hook_token_env)?;
+    let mut patched = patch_openclaw_config_with_message_template(
+        &raw_config,
+        &options.hook_token_env,
+        options.message_template.as_deref(),
+    )?;
     let (token_env, existing_literal_token) =
         normalize_openclaw_hook_token(&mut patched, &options.hook_token_env)?;
     ensure_openclaw_env_token(

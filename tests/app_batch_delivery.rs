@@ -104,19 +104,12 @@ filter_profile = "authority_passthrough"
     assert_eq!(first.events_enqueued, 4);
     assert_eq!(first.events_delivered, 3);
     assert_eq!(first_payload["articleCount"], 3);
-    assert!(first_payload["sessionKey"]
-        .as_str()
-        .expect("session key")
-        .starts_with("hook:feedwake:"));
+    assert!(first_payload.get("sessionKey").is_none());
     assert_eq!(first_payload["articles"][0]["description"], "Summary 1");
     assert_eq!(second.events_enqueued, 0);
     assert_eq!(second.events_delivered, 1);
     assert_eq!(second_payload["articleCount"], 1);
-    assert!(second_payload["sessionKey"]
-        .as_str()
-        .expect("session key")
-        .starts_with("hook:feedwake:"));
-    assert_ne!(first_payload["sessionKey"], second_payload["sessionKey"]);
+    assert!(second_payload.get("sessionKey").is_none());
     assert_eq!(second_payload["articles"][0]["title"], "Alert 4");
 }
 

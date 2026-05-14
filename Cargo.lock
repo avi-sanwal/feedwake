@@ -338,7 +338,7 @@ dependencies = [
  "chrono",
  "clap",
  "feed-rs",
- "getrandom 0.2.17",
+ "getrandom 0.4.2",
  "json5",
  "percent-encoding",
  "regex",
